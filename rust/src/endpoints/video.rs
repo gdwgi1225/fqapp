@@ -8,6 +8,8 @@ use std::time::Duration;
 
 use base64::Engine;
 use futures::future::BoxFuture;
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
 use once_cell::sync::Lazy;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha512};
@@ -46,6 +48,8 @@ const VIDEO_RETRY_MIN_BUDGET: Duration = Duration::from_millis(250);
 const VIDEO_DEVICE_ROTATION_BUDGET: Duration = Duration::from_secs(6);
 const VIDEO_DEVICE_RETRY_RESERVE: Duration = Duration::from_secs(2);
 const VIDEO_DEVICE_SETTLE: Duration = Duration::from_millis(500);
+const VIDEO_SOURCE_COMPLETION_GRACE: Duration = Duration::from_secs(1);
+const STREAM_SOURCE_COUNT: usize = 3;
 
 fn retry_has_budget(at: Instant, deadline: Instant) -> bool {
     at + VIDEO_RETRY_MIN_BUDGET < deadline
@@ -148,7 +152,6 @@ impl StreamVideoSource {
 }
 
 struct FetchedVideoSource {
-    source: StreamVideoSource,
     device_id: Option<String>,
     empty_playback: bool,
     parsed: Option<ParsedVideoResponse>,
@@ -165,14 +168,6 @@ impl FetchedVideoSource {
     }
 }
 
-fn empty_playback_devices(sources: &[FetchedVideoSource]) -> HashSet<String> {
-    let mut devices = HashSet::new();
-    for source in sources {
-        source.remember_empty_device(&mut devices);
-    }
-    devices
-}
-
 async fn quarantine_empty_playback_devices(ctx: &Ctx, video_id: &str, devices: &HashSet<String>) {
     let mut quarantined = 0;
     for device_id in devices {
@@ -187,37 +182,201 @@ async fn quarantine_empty_playback_devices(ctx: &Ctx, video_id: &str, devices: &
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum DirectVideoSourceStatus {
-    Missing,
-    CodecRejected,
-    NotFound,
-}
-
 enum FallbackResolution {
     Found(String, Vec<u8>),
     CodecRejected,
     NotFound { retryable: bool, conclusive: bool },
 }
 
-struct StreamVideoResolution {
+struct SourceAttemptResolution {
     resolution: VideoSourceResolution,
-    resolved_source: Option<StreamVideoSource>,
+    retryable: bool,
 }
 
-impl StreamVideoResolution {
-    fn found(source: StreamVideoSource, url: String, key: Vec<u8>) -> Self {
-        Self {
-            resolution: VideoSourceResolution::Found(url, key),
-            resolved_source: Some(source),
-        }
-    }
+struct StreamSourceRun {
+    index: usize,
+    fetched: FetchedVideoSource,
+    resolution: VideoSourceResolution,
+    empty_devices: HashSet<String>,
+}
+
+struct StreamSourcesRun {
+    sources: Vec<Option<FetchedVideoSource>>,
+    resolution: VideoSourceResolution,
+    empty_devices: HashSet<String>,
+}
+
+struct RecoveryDevice {
+    state: tokio::sync::Mutex<RecoveryDeviceState>,
+    changed: tokio::sync::Notify,
+}
+
+struct RecoveryDeviceState {
+    device_id: Option<String>,
+    attempted: bool,
+    initial_pending: usize,
+    successful_devices: HashSet<String>,
+    active_retries: usize,
+    replacing_device: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FallbackFetchFailure {
     Retryable,
     Permanent,
+}
+
+impl RecoveryDevice {
+    fn new() -> Self {
+        Self {
+            state: tokio::sync::Mutex::new(RecoveryDeviceState {
+                device_id: None,
+                attempted: false,
+                initial_pending: STREAM_SOURCE_COUNT,
+                successful_devices: HashSet::new(),
+                active_retries: 0,
+                replacing_device: None,
+            }),
+            changed: tokio::sync::Notify::new(),
+        }
+    }
+
+    async fn current(&self) -> Option<String> {
+        self.state.lock().await.device_id.clone()
+    }
+
+    async fn record_attempt(
+        &self,
+        fetched: &FetchedVideoSource,
+        serves_stream: bool,
+        initial: bool,
+    ) {
+        if !initial && !serves_stream {
+            return;
+        }
+        let mut state = self.state.lock().await;
+        if let (true, Some(device_id)) = (serves_stream, &fetched.device_id) {
+            state.successful_devices.insert(device_id.clone());
+        }
+        if initial {
+            state.initial_pending = state.initial_pending.saturating_sub(1);
+        }
+    }
+
+    async fn successful_devices(&self) -> HashSet<String> {
+        self.state.lock().await.successful_devices.clone()
+    }
+
+    async fn begin_retry(&self, deadline: Instant) -> bool {
+        loop {
+            let notified = self.changed.notified();
+            {
+                let mut state = self.state.lock().await;
+                if state.replacing_device.is_none() {
+                    state.active_retries += 1;
+                    return true;
+                }
+            }
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                return false;
+            }
+        }
+    }
+
+    async fn finish_retry(&self) {
+        let mut state = self.state.lock().await;
+        state.active_retries = state.active_retries.saturating_sub(1);
+    }
+
+    async fn ensure(
+        &self,
+        ctx: &Ctx,
+        video_id: &str,
+        source: StreamVideoSource,
+        failed_device_id: &str,
+        deadline: Instant,
+        attempt: usize,
+    ) -> Option<String> {
+        let now = Instant::now();
+        let rotation_budget = deadline
+            .saturating_duration_since(now)
+            .saturating_sub(VIDEO_DEVICE_RETRY_RESERVE)
+            .min(VIDEO_DEVICE_ROTATION_BUDGET);
+        if rotation_budget < VIDEO_RETRY_MIN_BUDGET {
+            log::warn!(
+                "video {video_id}: {} source retry skipped; insufficient device-rotation deadline",
+                source.name()
+            );
+            return None;
+        }
+
+        {
+            let mut state = self.state.lock().await;
+            if let Some(device_id) = &state.device_id {
+                return Some(device_id.clone());
+            }
+            if state.attempted {
+                return None;
+            }
+            if state.initial_pending > 0 {
+                log::info!(
+                    "video {video_id}: {} source retry kept on its device while other sources settle",
+                    source.name()
+                );
+                return None;
+            }
+            if !state.successful_devices.is_empty() {
+                return None;
+            }
+            if state.active_retries > 0 {
+                return None;
+            }
+            state.attempted = true;
+            state.replacing_device = Some(failed_device_id.to_string());
+        }
+
+        let result = tokio::time::timeout_at(
+            now + rotation_budget,
+            ctx.pool.replace_failed(failed_device_id),
+        )
+        .await;
+        let replacement = match &result {
+            Ok(Ok(device)) => Some(device.device_id.clone()),
+            _ => None,
+        };
+        {
+            let mut state = self.state.lock().await;
+            state.replacing_device = None;
+            if let Some(device_id) = &replacement {
+                state.device_id = Some(device_id.clone());
+            }
+        }
+        self.changed.notify_waiters();
+
+        match result {
+            Ok(Ok(_)) => {
+                log::info!(
+                    "video {video_id}: replacement device ready for {} retry attempt={attempt}",
+                    source.name()
+                );
+                replacement
+            }
+            Ok(Err(_)) => {
+                log::warn!(
+                    "video {video_id}: {} replacement device registration failed",
+                    source.name()
+                );
+                None
+            }
+            Err(_) => {
+                log::warn!(
+                    "video {video_id}: {} replacement device registration deadline exceeded",
+                    source.name()
+                );
+                None
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -253,170 +412,27 @@ fn handle_video<'a>(ctx: &'a Ctx, params: &'a Params) -> BoxFuture<'a, ApiResult
         let fetch_deadline = work_started + fetch_budget;
         let resolution_deadline = work_started + resolution_budget;
         let (bodies, resolved) = if stream_mode {
-            // The three official sources are independent. A zero-length body
-            // from one (the observed failure: HTTP 200 + empty JSON body) must
-            // not cancel the others, so this is `join!`, never `try_join!`.
             let auxiliary_deadline = work_started + VIDEO_AUXILIARY_BUDGET.min(fetch_budget);
-            let mut sources =
-                fetch_stream_video_sources(ctx, &video_id, fetch_deadline, auxiliary_deadline)
-                    .await;
-            let mut empty_device_ids = empty_playback_devices(&sources);
-
-            let mut stream_resolution =
-                resolve_stream_video_sources(ctx, &video_id, &mut sources, resolution_deadline)
-                    .await;
-            for (retry_index, retry_delay) in VIDEO_SOURCE_RETRY_DELAYS.into_iter().enumerate() {
-                let has_legacy_raw = parsed_stream_bodies(&sources)
-                    .iter()
-                    .any(|body| legacy_raw_response_has_playable_url(body));
-                if matches!(
-                    &stream_resolution.resolution,
-                    VideoSourceResolution::Found(_, _)
-                ) || has_legacy_raw
-                {
-                    break;
-                }
-                let mut retry_at = Instant::now() + retry_delay;
-                let retryable: Vec<_> = sources
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, fetched)| {
-                        let deadline = fetched
-                            .source
-                            .deadline(fetch_deadline, auxiliary_deadline)
-                            .min(resolution_deadline);
-                        (fetched.retryable && retry_has_budget(retry_at, deadline)).then_some((
-                            index,
-                            fetched.source,
-                            deadline,
-                        ))
-                    })
-                    .collect();
-                if retryable.is_empty() {
-                    break;
-                }
-                let mut replacement_device_id = String::new();
-                if let Some((source, device_id, deadline)) =
-                    retryable.iter().find_map(|(index, _, deadline)| {
-                        let fetched = &sources[*index];
-                        if fetched.empty_playback {
-                            fetched
-                                .device_id
-                                .as_deref()
-                                .map(|device_id| (fetched.source, device_id, *deadline))
-                        } else {
-                            None
-                        }
-                    })
-                {
-                    let now = Instant::now();
-                    let rotation_budget = deadline
-                        .saturating_duration_since(now)
-                        .saturating_sub(VIDEO_DEVICE_RETRY_RESERVE)
-                        .min(VIDEO_DEVICE_ROTATION_BUDGET);
-                    if rotation_budget >= VIDEO_RETRY_MIN_BUDGET {
-                        log::warn!(
-                            "video {video_id}: empty playback model from {}; rotating device before retry attempt={}",
-                            source.name(),
-                            retry_index + 1
-                        );
-                        match tokio::time::timeout_at(
-                            now + rotation_budget,
-                            ctx.pool.replace_failed(device_id),
-                        )
-                        .await
-                        {
-                            Ok(Ok(device)) => {
-                                replacement_device_id = device.device_id;
-                                retry_at = retry_at.max(Instant::now() + VIDEO_DEVICE_SETTLE);
-                                log::info!(
-                                    "video {video_id}: replacement device ready for retry attempt={}",
-                                    retry_index + 1
-                                );
-                            }
-                            Ok(Err(_)) => {
-                                log::warn!(
-                                    "video {video_id}: replacement device registration failed"
-                                );
-                            }
-                            Err(_) => {
-                                log::warn!(
-                                    "video {video_id}: replacement device registration deadline exceeded"
-                                );
-                            }
-                        }
-                    }
-                }
-                tokio::time::sleep_until(retry_at).await;
-                let now = Instant::now();
-                let retryable: Vec<_> = retryable
-                    .into_iter()
-                    .filter(|(_, _, deadline)| retry_has_budget(now, *deadline))
-                    .collect();
-                if retryable.is_empty() {
-                    log::warn!(
-                        "video {video_id}: source retry skipped; insufficient deadline remaining"
-                    );
-                    break;
-                }
-                let source_names = retryable
-                    .iter()
-                    .map(|(_, source, _)| source.name())
-                    .collect::<Vec<_>>()
-                    .join(",");
-                log::warn!(
-                    "video {video_id}: no playable stream resolved; retrying sources={source_names} attempt={}",
-                    retry_index + 1
-                );
-                let video_id_ref = video_id.as_str();
-                let pin_device = replacement_device_id.as_str();
-                let retries = retryable
-                    .into_iter()
-                    .map(|(index, source, deadline)| async move {
-                        (
-                            index,
-                            fetch_stream_video_source(
-                                source,
-                                ctx,
-                                video_id_ref,
-                                deadline,
-                                pin_device,
-                            )
-                            .await,
-                        )
-                    });
-                for (index, fetched) in futures::future::join_all(retries).await {
-                    fetched.remember_empty_device(&mut empty_device_ids);
-                    sources[index] = fetched;
-                }
-                stream_resolution =
-                    resolve_stream_video_sources(ctx, &video_id, &mut sources, resolution_deadline)
-                        .await;
-                if matches!(
-                    &stream_resolution.resolution,
-                    VideoSourceResolution::Found(_, _)
-                ) {
-                    let recovered_source = stream_resolution
-                        .resolved_source
-                        .map(StreamVideoSource::name)
-                        .unwrap_or("unknown");
-                    log::info!(
-                        "video {video_id}: playable stream recovered after retry; source={recovered_source}"
-                    );
-                    break;
-                }
-            }
-
-            quarantine_empty_playback_devices(ctx, &video_id, &empty_device_ids).await;
-            let bodies = sources
+            let collected = collect_stream_sources(
+                ctx,
+                &video_id,
+                fetch_deadline,
+                auxiliary_deadline,
+                resolution_deadline,
+            )
+            .await;
+            quarantine_empty_playback_devices(ctx, &video_id, &collected.empty_devices).await;
+            let bodies = collected
+                .sources
                 .into_iter()
+                .flatten()
                 .filter_map(|source| source.parsed)
                 .collect::<Vec<_>>();
             if bodies.is_empty() {
                 return Err(ApiError::Internal("视频取流失败，请稍后重试".to_string()));
             }
 
-            (bodies, stream_resolution.resolution)
+            (bodies, collected.resolution)
         } else {
             let parsed = fetch_parsed_video_response(
                 "phoenix",
@@ -597,35 +613,261 @@ async fn fetch_parsed_video_response(
     Some(parsed)
 }
 
-async fn fetch_stream_video_sources(
+async fn collect_stream_sources(
     ctx: &Ctx,
     video_id: &str,
     fetch_deadline: Instant,
     auxiliary_deadline: Instant,
-) -> Vec<FetchedVideoSource> {
-    let shortplay = fetch_stream_video_source(
+    resolution_deadline: Instant,
+) -> StreamSourcesRun {
+    let recovery = RecoveryDevice::new();
+    let mut running = FuturesUnordered::new();
+    for (index, source) in [
         StreamVideoSource::Shortplay,
-        ctx,
-        video_id,
-        fetch_deadline,
-        "",
-    );
-    let batch = fetch_stream_video_source(
         StreamVideoSource::DragonBatch,
-        ctx,
-        video_id,
-        auxiliary_deadline,
-        "",
-    );
-    let phoenix = fetch_stream_video_source(
         StreamVideoSource::Phoenix,
-        ctx,
-        video_id,
-        fetch_deadline,
-        "",
-    );
-    let (shortplay, batch, phoenix) = tokio::join!(shortplay, batch, phoenix);
-    vec![shortplay, batch, phoenix]
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        running.push(run_stream_video_source(
+            index,
+            source,
+            ctx,
+            video_id,
+            source.deadline(fetch_deadline, auxiliary_deadline),
+            resolution_deadline,
+            &recovery,
+        ));
+    }
+
+    let mut sources = (0..STREAM_SOURCE_COUNT).map(|_| None).collect::<Vec<_>>();
+    let mut resolutions = (0..STREAM_SOURCE_COUNT).map(|_| None).collect::<Vec<_>>();
+    let mut empty_devices = HashSet::new();
+    let mut completed = 0;
+    let mut found_source = None;
+    let mut completion_deadline = None;
+
+    loop {
+        let next = if let Some(deadline) = completion_deadline {
+            match tokio::time::timeout_at(deadline, running.next()).await {
+                Ok(next) => next,
+                Err(_) => break,
+            }
+        } else {
+            running.next().await
+        };
+        let Some(run) = next else {
+            break;
+        };
+
+        completed += 1;
+        let StreamSourceRun {
+            index,
+            fetched,
+            resolution,
+            empty_devices: source_empty_devices,
+        } = run;
+        empty_devices.extend(source_empty_devices);
+        if matches!(resolution, VideoSourceResolution::Found(_, _))
+            && found_source.is_none_or(|current| index < current)
+        {
+            found_source = Some(index);
+            completion_deadline
+                .get_or_insert_with(|| Instant::now() + VIDEO_SOURCE_COMPLETION_GRACE);
+        }
+        sources[index] = Some(fetched);
+        resolutions[index] = Some(resolution);
+
+        if completed == sources.len() {
+            break;
+        }
+    }
+    drop(running);
+
+    let resolution = if let Some(index) = found_source {
+        resolutions[index]
+            .take()
+            .expect("a completed found source must carry its resolution")
+    } else if resolutions
+        .iter()
+        .all(|resolution| matches!(resolution, Some(VideoSourceResolution::CodecRejected)))
+    {
+        VideoSourceResolution::CodecRejected
+    } else {
+        VideoSourceResolution::NotFound
+    };
+    let successful_devices = recovery.successful_devices().await;
+    empty_devices.retain(|device_id| !successful_devices.contains(device_id));
+    StreamSourcesRun {
+        sources,
+        resolution,
+        empty_devices,
+    }
+}
+
+async fn run_stream_video_source(
+    index: usize,
+    source: StreamVideoSource,
+    ctx: &Ctx,
+    video_id: &str,
+    source_deadline: Instant,
+    resolution_deadline: Instant,
+    recovery: &RecoveryDevice,
+) -> StreamSourceRun {
+    let deadline = source_deadline.min(resolution_deadline);
+    let mut empty_devices = HashSet::new();
+    let mut retry_pin = String::new();
+    let mut retry_slot = false;
+    let mut retry_index = 0;
+
+    loop {
+        if let Some(device_id) = recovery.current().await {
+            retry_pin = device_id;
+        }
+        let mut fetched =
+            fetch_stream_video_source(source, ctx, video_id, deadline, retry_pin.as_str()).await;
+        fetched.remember_empty_device(&mut empty_devices);
+
+        let attempt = match fetched.parsed.as_ref() {
+            Some(parsed) => {
+                resolve_stream_video_source_attempt(ctx, video_id, source, parsed, deadline).await
+            }
+            None => SourceAttemptResolution {
+                resolution: VideoSourceResolution::NotFound,
+                retryable: fetched.retryable,
+            },
+        };
+        fetched.retryable |= attempt.retryable;
+        let retryable = fetched.retryable;
+        let resolution = attempt.resolution;
+        let serves_stream = matches!(resolution, VideoSourceResolution::Found(_, _))
+            || fetched
+                .parsed
+                .as_ref()
+                .is_some_and(legacy_raw_response_has_playable_url);
+        recovery
+            .record_attempt(&fetched, serves_stream, retry_index == 0)
+            .await;
+        if retry_slot {
+            recovery.finish_retry().await;
+        }
+
+        if matches!(resolution, VideoSourceResolution::Found(_, _)) {
+            if retry_index > 0 {
+                log::info!(
+                    "video {video_id}: playable stream recovered after retry; source={}",
+                    source.name()
+                );
+            }
+            return StreamSourceRun {
+                index,
+                fetched,
+                resolution,
+                empty_devices,
+            };
+        }
+
+        let Some(retry_delay) = VIDEO_SOURCE_RETRY_DELAYS.get(retry_index) else {
+            return StreamSourceRun {
+                index,
+                fetched,
+                resolution,
+                empty_devices,
+            };
+        };
+        if !retryable {
+            return StreamSourceRun {
+                index,
+                fetched,
+                resolution,
+                empty_devices,
+            };
+        }
+
+        let mut retry_at = Instant::now() + *retry_delay;
+        if !retry_has_budget(retry_at, deadline) {
+            log::warn!(
+                "video {video_id}: {} source retry skipped; insufficient deadline remaining",
+                source.name()
+            );
+            return StreamSourceRun {
+                index,
+                fetched,
+                resolution,
+                empty_devices,
+            };
+        }
+
+        // Prove a device can still serve the current source before replacing it.
+        // If another source is still settling, keep using this device and defer
+        // rotation rather than spending this source's remaining retry window.
+        if fetched.empty_playback {
+            if let Some(failed_device_id) = fetched.device_id.as_deref() {
+                retry_pin = failed_device_id.to_string();
+                if retry_index > 0 {
+                    log::warn!(
+                        "video {video_id}: empty playback model from {}; evaluating device recovery before retry attempt={}",
+                        source.name(),
+                        retry_index + 1,
+                    );
+                    let replacement = recovery
+                        .ensure(
+                            ctx,
+                            video_id,
+                            source,
+                            failed_device_id,
+                            deadline,
+                            retry_index + 1,
+                        )
+                        .await;
+                    if replacement.is_some() {
+                        retry_at = retry_at.max(Instant::now() + VIDEO_DEVICE_SETTLE);
+                    }
+                    if let Some(replacement) = replacement {
+                        retry_pin = replacement;
+                    }
+                }
+            }
+        }
+        if !retry_has_budget(retry_at, deadline) {
+            log::warn!(
+                "video {video_id}: {} source retry skipped after device recovery; insufficient deadline remaining",
+                source.name()
+            );
+            return StreamSourceRun {
+                index,
+                fetched,
+                resolution,
+                empty_devices,
+            };
+        }
+
+        log::warn!(
+            "video {video_id}: retrying source={} attempt={}",
+            source.name(),
+            retry_index + 1
+        );
+        tokio::time::sleep_until(retry_at).await;
+        if !retry_has_budget(Instant::now(), deadline) {
+            return StreamSourceRun {
+                index,
+                fetched,
+                resolution,
+                empty_devices,
+            };
+        }
+        if !recovery.begin_retry(deadline).await {
+            return StreamSourceRun {
+                index,
+                fetched,
+                resolution,
+                empty_devices,
+            };
+        }
+        retry_slot = true;
+        retry_index += 1;
+    }
 }
 
 async fn fetch_stream_video_source(
@@ -645,7 +887,6 @@ async fn fetch_stream_video_source(
                     error.message()
                 );
                 return FetchedVideoSource {
-                    source,
                     device_id: None,
                     empty_playback: false,
                     parsed: None,
@@ -655,7 +896,6 @@ async fn fetch_stream_video_source(
             Err(_) => {
                 log::warn!("video {video_id}: {source_name} request deadline exceeded");
                 return FetchedVideoSource {
-                    source,
                     device_id: None,
                     empty_playback: false,
                     parsed: None,
@@ -672,7 +912,6 @@ async fn fetch_stream_video_source(
     if raw.is_empty() {
         log::warn!("video {video_id}: {source_name} empty response body; body_len=0");
         return FetchedVideoSource {
-            source,
             device_id: Some(device_id),
             empty_playback: true,
             parsed: None,
@@ -688,7 +927,6 @@ async fn fetch_stream_video_source(
                 raw.len()
             );
             return FetchedVideoSource {
-                source,
                 device_id: Some(device_id),
                 empty_playback: false,
                 parsed: None,
@@ -702,7 +940,6 @@ async fn fetch_stream_video_source(
             body_envelope(&parsed.root)
         );
         return FetchedVideoSource {
-            source,
             device_id: Some(device_id),
             empty_playback: false,
             parsed: None,
@@ -717,88 +954,10 @@ async fn fetch_stream_video_source(
         );
     }
     FetchedVideoSource {
-        source,
         device_id: Some(device_id),
         empty_playback,
         parsed: Some(parsed),
         retryable: false,
-    }
-}
-
-fn parsed_stream_bodies(sources: &[FetchedVideoSource]) -> Vec<&ParsedVideoResponse> {
-    sources
-        .iter()
-        .filter_map(|fetched| fetched.parsed.as_ref())
-        .collect()
-}
-
-async fn resolve_stream_video_sources(
-    ctx: &Ctx,
-    video_id: &str,
-    sources: &mut [FetchedVideoSource],
-    deadline: Instant,
-) -> StreamVideoResolution {
-    let mut direct_statuses = Vec::with_capacity(sources.len());
-    for fetched in sources.iter() {
-        let status = match fetched.parsed.as_ref() {
-            None => DirectVideoSourceStatus::Missing,
-            Some(parsed) => match resolve_video_source_direct(parsed) {
-                VideoSourceResolution::Found(url, key) => {
-                    return StreamVideoResolution::found(fetched.source, url, key);
-                }
-                VideoSourceResolution::CodecRejected => DirectVideoSourceStatus::CodecRejected,
-                VideoSourceResolution::NotFound => DirectVideoSourceStatus::NotFound,
-            },
-        };
-        direct_statuses.push(status);
-    }
-
-    let mut all_codecs_rejected = sources.iter().all(|source| source.parsed.is_some());
-    for (index, fetched) in sources.iter_mut().enumerate() {
-        let Some(parsed) = fetched.parsed.as_ref() else {
-            continue;
-        };
-        let fallback =
-            resolve_video_source_fallback_status(ctx, video_id, fetched.source, parsed, deadline)
-                .await;
-        let no_payload = !video_data_is_usable(&parsed.root);
-        match fallback {
-            FallbackResolution::Found(url, key) => {
-                return StreamVideoResolution::found(fetched.source, url, key);
-            }
-            FallbackResolution::CodecRejected => {
-                fetched.retryable = false;
-            }
-            FallbackResolution::NotFound {
-                retryable,
-                conclusive,
-            } => {
-                if retryable || !conclusive {
-                    fetched.retryable = retryable;
-                    all_codecs_rejected = false;
-                    continue;
-                }
-                match direct_statuses[index] {
-                    DirectVideoSourceStatus::CodecRejected => {
-                        fetched.retryable = false;
-                    }
-                    DirectVideoSourceStatus::NotFound | DirectVideoSourceStatus::Missing => {
-                        fetched.retryable = no_payload;
-                        all_codecs_rejected = false;
-                    }
-                }
-            }
-        }
-    }
-
-    let resolution = if all_codecs_rejected {
-        VideoSourceResolution::CodecRejected
-    } else {
-        VideoSourceResolution::NotFound
-    };
-    StreamVideoResolution {
-        resolution,
-        resolved_source: None,
     }
 }
 
@@ -1150,6 +1309,52 @@ fn resolve_video_source_direct(parsed: &ParsedVideoResponse) -> VideoSourceResol
     }
 }
 
+async fn resolve_stream_video_source_attempt(
+    ctx: &Ctx,
+    video_id: &str,
+    source: StreamVideoSource,
+    parsed: &ParsedVideoResponse,
+    deadline: Instant,
+) -> SourceAttemptResolution {
+    let direct = resolve_video_source_direct(parsed);
+    if matches!(direct, VideoSourceResolution::Found(_, _)) {
+        return SourceAttemptResolution {
+            resolution: direct,
+            retryable: false,
+        };
+    }
+
+    match resolve_video_source_fallback_status(ctx, video_id, source, parsed, deadline).await {
+        FallbackResolution::Found(url, key) => SourceAttemptResolution {
+            resolution: VideoSourceResolution::Found(url, key),
+            retryable: false,
+        },
+        FallbackResolution::CodecRejected => SourceAttemptResolution {
+            resolution: VideoSourceResolution::CodecRejected,
+            retryable: false,
+        },
+        FallbackResolution::NotFound {
+            retryable,
+            conclusive,
+        } if retryable || !conclusive => SourceAttemptResolution {
+            resolution: VideoSourceResolution::NotFound,
+            retryable,
+        },
+        FallbackResolution::NotFound { .. }
+            if matches!(direct, VideoSourceResolution::CodecRejected) =>
+        {
+            SourceAttemptResolution {
+                resolution: VideoSourceResolution::CodecRejected,
+                retryable: false,
+            }
+        }
+        FallbackResolution::NotFound { .. } => SourceAttemptResolution {
+            resolution: VideoSourceResolution::NotFound,
+            retryable: !video_data_is_usable(&parsed.root),
+        },
+    }
+}
+
 async fn resolve_video_source_fallback_status(
     ctx: &Ctx,
     video_id: &str,
@@ -1363,6 +1568,8 @@ async fn extract_stream_variants(
     deadline: Instant,
 ) -> Vec<Value> {
     let mut scored = Vec::new();
+    let mut fallback_requests = Vec::new();
+    let mut seen_fallback_urls = HashSet::new();
     for body in bodies {
         for model in &body.models {
             // NOTE: 不用 video_model_encrypted() 做前置——它只认数组形状的
@@ -1376,12 +1583,19 @@ async fn extract_stream_variants(
                     .filter(|s| !s.is_empty())
                     .and_then(|s| audio_b64_decode(s).ok()),
             ));
-            if Instant::now() < deadline {
-                scored.extend(
-                    fallback_variant_rows(ctx, video_id, "variants", model, deadline).await,
-                );
+            let fallback_url = fallback_api_url(model);
+            if Instant::now() < deadline
+                && !fallback_url.is_empty()
+                && seen_fallback_urls.insert(fallback_url)
+            {
+                fallback_requests.push(Box::pin(fallback_variant_rows(
+                    ctx, video_id, "variants", model, deadline,
+                )));
             }
         }
+    }
+    for rows in futures::future::join_all(fallback_requests).await {
+        scored.extend(rows);
     }
     merge_variant_rows(scored)
 }
@@ -1551,8 +1765,8 @@ fn variant_rows_from_entries(
     let mut rows: Vec<(i64, Value)> = entries
         .into_iter()
         .filter_map(|(slot, info)| {
-            let w = int64_from_any(info.get("vwidth").unwrap_or(&Value::Null));
-            let h = int64_from_any(info.get("vheight").unwrap_or(&Value::Null));
+            let w = video_quality_metric(info, &["vwidth"]);
+            let h = video_quality_metric(info, &["vheight"]);
             // 档位语义按**短边**：竖屏剧 1280×720 是 720P 而非 2K
             // （官方 Resolution 枚举同样以短边为准）。
             let short_edge = if w > 0 && h > 0 { w.min(h) } else { w.max(h) };
@@ -1789,6 +2003,20 @@ fn select_video_source<'a>(
     unresolved
 }
 
+/// Newer models keep quality under `video_meta`; older models put it on the entry.
+fn video_quality_metric(info: &Map<String, Value>, names: &[&str]) -> i64 {
+    let meta = info.get("video_meta").and_then(Value::as_object);
+    for source in [meta, Some(info)].into_iter().flatten() {
+        for name in names {
+            let value = source.get(*name).map(int64_from_any).unwrap_or(0);
+            if value > 0 {
+                return value;
+            }
+        }
+    }
+    0
+}
+
 fn video_quality_score(info: &Map<String, Value>) -> Option<i64> {
     // Codec gates mirror the reference short-drama client: bytevc2
     // (H.266-class) has no decoder on the playback path, so a variant that
@@ -1814,12 +2042,9 @@ fn video_quality_score(info: &Map<String, Value>) -> Option<i64> {
     if codec.contains("bytevc2") {
         return None;
     }
-    let w = int64_from_any(info.get("vwidth").unwrap_or(&Value::Null));
-    let h = int64_from_any(info.get("vheight").unwrap_or(&Value::Null));
-    let mut b = int64_from_any(info.get("bitrate").unwrap_or(&Value::Null));
-    if b == 0 {
-        b = int64_from_any(info.get("real_bitrate").unwrap_or(&Value::Null));
-    }
+    let w = video_quality_metric(info, &["vwidth"]);
+    let h = video_quality_metric(info, &["vheight"]);
+    let b = video_quality_metric(info, &["bitrate", "real_bitrate"]);
     let bonus = i64::from(codec.contains("h264") || codec.contains("avc1"));
     Some(w * 1_000_000_000 + h * 1_000_000 + b + bonus)
 }

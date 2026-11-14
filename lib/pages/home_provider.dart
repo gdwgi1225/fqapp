@@ -290,6 +290,12 @@ const _AllManjuGroup _emptyManjuGroup = (
   hasMore: false,
 );
 
+/// A mixed short-drama feed may advance while every card on the page belongs
+/// to another media type. Follow a few such pages, then use the search fallback
+/// (and its real empty state when necessary) instead of leaving pagination
+/// permanently enabled.
+const int _maxFilteredVideoPages = 3;
+
 /// Loads and pages the homepage feeds. Each async operation captures its tab
 /// and feed before the first await, so switching tabs can never redirect a
 /// late response into a different tab's cache.
@@ -818,32 +824,56 @@ class HomeNotifier extends Notifier<HomeState> {
     Object? loaderFailure;
     if (tabType != null) {
       try {
-        final page = await _fetchHomepage(tabType: tabType);
-        if (!_answersTab(page, tabType, kind)) {
-          // 上游回答的是别的分类：这份 cells/items 不是这一页的内容。宁可退回
-          // 搜索，也不要画别人的榜和书（再经 `_forceKind` 重标成本分类）。
-          loaderFailure = StateError('响应不属于 tab_type=$tabType');
-        } else {
+        var page = await _fetchHomepage(tabType: tabType);
+        var requestOffset = 0;
+        var checkedPages = 0;
+        String? sessionId;
+        while (true) {
+          if (!_answersTab(page, tabType, kind)) {
+            // 上游回答的是别的分类：这份 cells/items 不是这一页的内容。宁可退回
+            // 搜索，也不要画别人的榜和书（再经 `_forceKind` 重标成本分类）。
+            loaderFailure = StateError('响应不属于 tab_type=$tabType');
+            break;
+          }
+
+          sessionId = page.sessionId ?? sessionId;
+          checkedPages++;
           final items = _forceKind(page.items, kind);
           final nextOffset = page.nextOffset;
-          final canAdvance = nextOffset != null && nextOffset > 0;
+          final canAdvance = nextOffset != null && nextOffset > requestOffset;
           // 准入条件必须包含 cells：官方书城区块（`tab_type=2`）的书全嵌在
           // `cell_data` 里，`parseMediaItems` 不一定能拉平出 items。只看 items
           // 会把一整页区块当成「空响应」丢掉，然后退回搜索路径，cells 全丢——
           // 这正是真机上区块一个都不出现、首页退回旧网格的原因。
-          if (items.isNotEmpty || page.cells.isNotEmpty || canAdvance) {
-            return _FetchedFeed(
-              items: items,
-              cells: page.cells,
-              tabs: page.tabs,
-              nextOffset: canAdvance ? nextOffset : null,
-              sessionId: page.sessionId,
-              searchPage: 0,
-              recommendExhausted: !canAdvance,
-              // Search remains available after recommendations are exhausted.
-              hasMore: true,
+          final hasPayload =
+              items.isNotEmpty || page.cells.isNotEmpty || canAdvance;
+          if (!hasPayload) break;
+
+          final filteredEmpty =
+              kind == 'video' && usesLocalTabs && items.isEmpty;
+          if (filteredEmpty &&
+              canAdvance &&
+              checkedPages < _maxFilteredVideoPages) {
+            requestOffset = nextOffset;
+            page = await _fetchHomepage(
+              tabType: tabType,
+              offset: requestOffset,
+              sessionId: sessionId,
             );
+            continue;
           }
+          if (filteredEmpty) break;
+          return _FetchedFeed(
+            items: items,
+            cells: page.cells,
+            tabs: page.tabs,
+            nextOffset: canAdvance ? nextOffset : null,
+            sessionId: sessionId,
+            searchPage: 0,
+            recommendExhausted: !canAdvance,
+            // Search remains available after recommendations are exhausted.
+            hasMore: true,
+          );
         }
       } catch (loaderError) {
         // Older backends may not expose recommendations; search below keeps the
@@ -1093,33 +1123,51 @@ class HomeNotifier extends Notifier<HomeState> {
     final searchName = identity.tabType == 2 ? '小说' : name;
     final tabType = identity.tabType;
     Object? loaderFailure;
+    var latestSessionId = feed.sessionId;
     if (tabType != null && !feed.recommendExhausted) {
       try {
-        final page = await _fetchHomepage(
-          tabType: tabType,
-
-          offset: feed.offset,
-          sessionId: feed.sessionId,
-        );
-        // 追加页同样要认领归属：拿回别的分类的下一页并追加进来，就是
-        // 「听书」翻页后冒出一堆推荐/小说卡片的直接渠道。
-        if (!_answersTab(page, tabType, kind)) {
-          throw StateError('响应不属于 tab_type=$tabType');
-        }
-        final items = _forceKind(page.items, kind);
-        final nextOffset = page.nextOffset;
-        final canAdvance = nextOffset != null && nextOffset > feed.offset;
-        // Duplicate or empty pages can still lead to fresh recommendations.
-        // Only an advancing cursor is safe to request again.
-        if (canAdvance || items.any((item) => _isUnseen(feed, item))) {
-          return _FetchedFeed(
-            items: items,
-            nextOffset: canAdvance ? nextOffset : null,
-            sessionId: page.sessionId,
-            searchPage: feed.searchPage,
-            recommendExhausted: !canAdvance,
-            hasMore: true,
+        var offset = feed.offset;
+        var checkedPages = 0;
+        while (true) {
+          final page = await _fetchHomepage(
+            tabType: tabType,
+            offset: offset,
+            sessionId: latestSessionId,
           );
+          // 追加页同样要认领归属：拿回别的分类的下一页并追加进来，就是
+          // 「听书」翻页后冒出一堆推荐/小说卡片的直接渠道。
+          if (!_answersTab(page, tabType, kind)) {
+            throw StateError('响应不属于 tab_type=$tabType');
+          }
+
+          latestSessionId = page.sessionId ?? latestSessionId;
+          checkedPages++;
+          final items = _forceKind(page.items, kind);
+          final nextOffset = page.nextOffset;
+          final canAdvance = nextOffset != null && nextOffset > offset;
+          final filteredEmpty =
+              kind == 'video' && usesLocalTabs && items.isEmpty;
+          if (filteredEmpty &&
+              canAdvance &&
+              checkedPages < _maxFilteredVideoPages) {
+            offset = nextOffset;
+            continue;
+          }
+          if (filteredEmpty) break;
+
+          // Duplicate or empty pages can still lead to fresh recommendations.
+          // Only an advancing cursor is safe to request again.
+          if (canAdvance || items.any((item) => _isUnseen(feed, item))) {
+            return _FetchedFeed(
+              items: items,
+              nextOffset: canAdvance ? nextOffset : null,
+              sessionId: latestSessionId,
+              searchPage: feed.searchPage,
+              recommendExhausted: !canAdvance,
+              hasMore: true,
+            );
+          }
+          break;
         }
       } catch (loaderError) {
         // Fall through to search. A recommendation outage should not make the
@@ -1159,7 +1207,7 @@ class HomeNotifier extends Notifier<HomeState> {
     return _FetchedFeed(
       items: items,
       nextOffset: null,
-      sessionId: feed.sessionId,
+      sessionId: latestSessionId,
       searchPage: pageNumber,
       searchOffsets: {
         ...feed.searchOffsets,
