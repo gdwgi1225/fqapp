@@ -815,7 +815,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('榜单标签行两端与标题、卡片对齐（左右 gutter 一致）', (tester) async {
+  testWidgets('榜单标签首端与标题、卡片对齐，末端贴标签视口右留白', (tester) async {
     await tester.binding.setSurfaceSize(const Size(390, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     addTearDown(() => tester.pumpWidget(const SizedBox.shrink()));
@@ -856,23 +856,20 @@ void main() {
       reason: '盒宽 = 文字宽 + 2 × 10dp 内缩',
     );
 
-    // 滚到最右：最后一个标签的文字右缘应与卡片右留白（同一条 gutter）
-    // 对齐。修复前右侧让位 76dp，滚到头会空出一大截。宽度取自组件
-    // 实际尺寸，不跟着 setSurfaceSize 里的字面量走。
-    final railWidth = tester.getSize(find.byType(ClassicHomeRankRail)).width;
+    // 末标签贴标签视口的右 gutter；视口与按钮独占的热区相隔 12dp。
+    final viewport = tester.getRect(find.byType(SingleChildScrollView));
+    final moreRect = _moreRect(tester);
+    expect(viewport.right, closeTo(moreRect.left - 12, 1));
     await tester.drag(find.text('榜单1'), const Offset(-1200, 0));
     await tester.pumpAndSettle();
     final last = tester.getRect(find.text('榜单9'));
     expect(
       last.right,
-      closeTo(railWidth - gutter, 1),
-      reason: '最后一个标签文字右缘应与卡片右留白对齐',
+      closeTo(viewport.right - gutter, 1),
+      reason: '最后一个标签文字右缘应贴标签视口右留白',
     );
 
-    // 标签行盖在「更多」热区上层，但按钮的视觉内容在标题行内，点它必须
-    // 仍命中「更多」；标签行是 translucent，重叠区里落在标签上的点击归
-    // 标签，落在标签外空白的点击放行给下层「更多」（见下一个用例）。
-    final moreRect = tester.getRect(find.byType(ClassicHomeBlockMore));
+    // 滚到末标签后，两列仍各自接收点击。
     await tester.tapAt(Offset(moreRect.center.dx, moreRect.top + 6));
     expect(more, 1, reason: '「更多」的视觉区域必须仍可点');
     await tester.tap(find.text('榜单9'));
@@ -924,7 +921,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('标签行重叠区的空隙处拖动，仍滚动标签行而不是交给「更多」', (tester) async {
+  testWidgets('「更多」内横拖不滚动标签，标签视口内空隙横拖仍可滚动', (tester) async {
     await tester.binding.setSurfaceSize(const Size(390, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     addTearDown(() => tester.pumpWidget(const SizedBox.shrink()));
@@ -945,21 +942,33 @@ void main() {
       ),
     );
     final moreRect = _moreRect(tester);
+    final viewport = tester.getRect(find.byType(SingleChildScrollView));
+    expect(viewport.right, closeTo(moreRect.left - 12, 1));
     final before = tester.getRect(find.text('推荐')).left;
-    // 与上一条用例同一个空隙（热区内的 4dp 标签间隙）。translucent 只把
-    // 空白处的点击放行给「更多」，滚动层仍留在命中结果里：横向拖动必须
-    // 继续滚动标签行，否则「轻点让位、拖动失效」会变成另一种坏交互。
-    final gapX = _gapInMoreHotspot(tester, boardNames);
-    expect(gapX, isNotNull, reason: '需要至少一个落在「更多」热区内的标签空隙');
+    // 手势从按钮起始时，即使后来划进标签列，也不能滚动标签或触发按钮。
     await tester.dragFrom(
-      Offset(gapX!, moreRect.top + 32),
+      Offset(moreRect.center.dx, moreRect.top + 32),
       const Offset(-120, 0),
     );
     await tester.pumpAndSettle();
     expect(
       tester.getRect(find.text('推荐')).left,
+      closeTo(before, 0.01),
+      reason: '按钮热区不属于标签的横向滚动视口',
+    );
+    expect(more, 0, reason: '拖动不应触发「更多」');
+
+    final first = _boardWell(tester, boardNames.first);
+    final second = _boardWell(tester, boardNames[1]);
+    final gap = Offset((first.right + second.left) / 2, first.center.dy);
+    expect(second.left - first.right, closeTo(4, 0.01));
+    expect(viewport.contains(gap), isTrue, reason: '拖动起点必须在标签视口内的空隙');
+    await tester.dragFrom(gap, const Offset(-120, 0));
+    await tester.pumpAndSettle();
+    expect(
+      tester.getRect(find.text('推荐')).left,
       lessThan(before - 60),
-      reason: '空隙处的横向拖动应继续滚动标签行',
+      reason: '标签视口内空隙处的横向拖动仍应滚动标签行',
     );
     expect(more, 0, reason: '拖动不应触发「更多」');
     expect(tester.takeException(), isNull);
@@ -1005,16 +1014,13 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('3 字榜名占满热区时，热区下半的点击归标签（标签优先）', (tester) async {
+  testWidgets('3 字榜名横滚前后，「更多」上下沿点击均不切换标签', (tester) async {
     await tester.binding.setSurfaceSize(const Size(390, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     addTearDown(() => tester.pumpWidget(const SizedBox.shrink()));
     var selected = -1;
     var more = 0;
-    // 3 字榜名盒宽 59dp（文字 39 + 内缩 20），第 6 个标签占 x 321~380，
-    // 把「更多」热区（x 326~374）整个盖住。这是内容溢出时的真实场景：
-    // translucent 只保证「点击不丢失到滚动层」，点热区下半会切换榜单，
-    // 热区并没有恢复完整的 48dp——把现状固定下来，避免误以为已修好。
+    // 九个长榜名超出视口，也不能覆盖按钮的完整 48dp 热区。
     await tester.pumpWidget(
       _classic(
         ClassicHomeRankRail(
@@ -1029,23 +1035,25 @@ void main() {
         ),
       ),
     );
-    final moreRect = tester.getRect(find.byType(ClassicHomeBlockMore));
-    // 热区顶边 +6 落在标题行（y 8~31.75）里，仍是「更多」；下半 +32
-    // 落在标签行（约 31.75~79.75）里，被第 6 个标签全宽覆盖。
-    await tester.tapAt(Offset(moreRect.center.dx, moreRect.top + 6));
-    expect(more, 1, reason: '标题行里的「更多」视觉区域必须可点');
-    await tester.tapAt(Offset(moreRect.center.dx, moreRect.top + 32));
-    expect(selected, 5, reason: '热区下半落在第 6 个标签上，应切换榜单');
-    expect(more, 1, reason: '标签优先：这一次不触发「更多」');
-    // 滚到最右：末标签（x 336~384）压住热区下半，标题行里的「更多」
-    // 仍必须可点（此前只在初始位置验证过）。
+    final moreRect = _moreRect(tester);
+    final viewport = tester.getRect(find.byType(SingleChildScrollView));
+    expect(moreRect.height, greaterThanOrEqualTo(48));
+    expect(viewport.right, closeTo(moreRect.left - 12, 1));
+    await tester.tapAt(Offset(moreRect.center.dx, moreRect.top + 2));
+    expect(more, 1, reason: '「更多」热区上沿必须可点');
+    await tester.tapAt(Offset(moreRect.center.dx, moreRect.bottom - 2));
+    expect(selected, -1, reason: '「更多」下沿点击不能切换榜单');
+    expect(more, 2, reason: '「更多」热区下沿必须可点');
     await tester.drag(find.text('榜单1'), const Offset(-1600, 0));
     await tester.pumpAndSettle();
-    await tester.tapAt(Offset(moreRect.center.dx, moreRect.top + 6));
-    expect(more, 2, reason: '滚到最右后标题行里的「更多」仍必须可点');
-    await tester.tapAt(Offset(moreRect.center.dx, moreRect.top + 32));
-    expect(selected, 8, reason: '热区下半落在末标签上，应切换榜单');
-    expect(more, 2, reason: '末标签仍优先于「更多」');
+    await tester.tapAt(Offset(moreRect.center.dx, moreRect.top + 2));
+    expect(more, 3, reason: '滚到最右后「更多」上沿仍必须可点');
+    await tester.tapAt(Offset(moreRect.center.dx, moreRect.bottom - 2));
+    expect(selected, -1, reason: '末标签不能遮住「更多」下沿');
+    expect(more, 4, reason: '滚到最右后「更多」下沿仍必须可点');
+    await tester.tap(find.text('榜单9'));
+    expect(selected, 8, reason: '末标签在自己的视口内仍可选择');
+    expect(more, 4, reason: '点击末标签不应触发「更多」');
     expect(tester.takeException(), isNull);
   });
 
@@ -1309,7 +1317,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('textScale 1.5 下单字榜名仍两端对齐且下划线居中', (tester) async {
+  testWidgets('textScale 1.5 下单字榜名贴标签视口两端且下划线居中', (tester) async {
     await tester.binding.setSurfaceSize(const Size(390, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     addTearDown(() => tester.pumpWidget(const SizedBox.shrink()));
@@ -1338,7 +1346,8 @@ void main() {
     // gutter（盒宽 48 > 文字 + 内缩）。19.5dp 依赖 flutter_test 默认字体
     // （每字宽 = 字号）这一前提，换字体后需重算。
     final title = tester.getRect(find.text('排行榜'));
-    final railWidth = tester.getSize(find.byType(ClassicHomeRankRail)).width;
+    final viewport = tester.getRect(find.byType(SingleChildScrollView));
+    expect(viewport.right, closeTo(_moreRect(tester).left - 12, 1));
     final first = tester.getRect(find.text('榜'));
     expect(first.left, closeTo(title.left, 1), reason: '1.5× 下首标签仍贴 gutter');
     final indicator = _boardIndicator(tester, '榜');
@@ -1348,8 +1357,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(
       tester.getRect(find.text('终')).right,
-      closeTo(railWidth - title.left, 1),
-      reason: '1.5× 下末标签仍贴卡片右留白',
+      closeTo(viewport.right - title.left, 1),
+      reason: '1.5× 下末标签仍贴标签视口右留白',
     );
     expect(tester.takeException(), isNull);
   });
@@ -1464,7 +1473,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('短榜名（单字）末标签右端仍与卡片右留白对齐', (tester) async {
+  testWidgets('短榜名（单字）末标签与标签视口右留白对齐', (tester) async {
     await tester.binding.setSurfaceSize(const Size(390, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     addTearDown(() => tester.pumpWidget(const SizedBox.shrink()));
@@ -1486,19 +1495,20 @@ void main() {
       ),
     );
     final title = tester.getRect(find.text('排行榜'));
-    final railWidth = tester.getSize(find.byType(ClassicHomeRankRail)).width;
+    final viewport = tester.getRect(find.byType(SingleChildScrollView));
+    expect(viewport.right, closeTo(_moreRect(tester).left - 12, 1));
     await tester.drag(find.text('榜'), const Offset(-1600, 0));
     await tester.pumpAndSettle();
     final last = tester.getRect(find.text('终'));
     expect(
       last.right,
-      closeTo(railWidth - title.left, 1),
-      reason: '单字末标签的文字右缘应贴齐卡片右留白',
+      closeTo(viewport.right - title.left, 1),
+      reason: '单字末标签的文字右缘应贴标签视口右留白',
     );
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('标签行两端对齐在 textScale 0.8 / 1.5 下仍成立', (tester) async {
+  testWidgets('标签视口两端对齐在 textScale 0.8 / 1.5 下仍成立', (tester) async {
     await tester.binding.setSurfaceSize(const Size(390, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     addTearDown(() => tester.pumpWidget(const SizedBox.shrink()));
@@ -1534,20 +1544,21 @@ void main() {
         closeTo(title.left, 1),
         reason: 'textScale $scale：首标签文字左缘应贴齐标题',
       );
-      final railWidth = tester.getSize(find.byType(ClassicHomeRankRail)).width;
+      final viewport = tester.getRect(find.byType(SingleChildScrollView));
+      expect(viewport.right, closeTo(_moreRect(tester).left - 12, 1));
       await tester.drag(find.text('榜单1'), const Offset(-1600, 0));
       await tester.pumpAndSettle();
       final last = tester.getRect(find.text('榜单9'));
       expect(
         last.right,
-        closeTo(railWidth - title.left, 1),
-        reason: 'textScale $scale：末标签文字右缘应与卡片右留白对齐',
+        closeTo(viewport.right - title.left, 1),
+        reason: 'textScale $scale：末标签文字右缘应贴标签视口右留白',
       );
       expect(tester.takeException(), isNull);
     }
   });
 
-  testWidgets('textScale 2.0 下标签行仍两端对齐且下划线居中', (tester) async {
+  testWidgets('textScale 2.0 下标签贴视口两端且下划线居中', (tester) async {
     await tester.binding.setSurfaceSize(const Size(390, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     addTearDown(() => tester.pumpWidget(const SizedBox.shrink()));
@@ -1589,7 +1600,8 @@ void main() {
       ),
     );
     final title = tester.getRect(find.text('排行榜'));
-    final railWidth = tester.getSize(find.byType(ClassicHomeRankRail)).width;
+    final viewport = tester.getRect(find.byType(SingleChildScrollView));
+    expect(viewport.right, closeTo(_moreRect(tester).left - 12, 1));
     final first = tester.getRect(find.text('推荐'));
     expect(first.left, closeTo(title.left, 1), reason: '2.0× 下首标签仍贴 gutter');
     final indicator = _boardIndicator(tester, '推荐');
@@ -1607,13 +1619,13 @@ void main() {
     await tester.pumpAndSettle();
     expect(
       tester.getRect(find.text('完结')).right,
-      closeTo(railWidth - title.left, 1),
-      reason: '2.0× 下末标签仍贴卡片右留白',
+      closeTo(viewport.right - title.left, 1),
+      reason: '2.0× 下末标签仍贴标签视口右留白',
     );
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('窄屏 320dp 下九个榜名两端对齐仍成立', (tester) async {
+  testWidgets('窄屏 320dp 下九个榜名贴标签视口两端', (tester) async {
     await tester.binding.setSurfaceSize(const Size(320, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     addTearDown(() => tester.pumpWidget(const SizedBox.shrink()));
@@ -1632,7 +1644,8 @@ void main() {
       ),
     );
     final title = tester.getRect(find.text('排行榜'));
-    final railWidth = tester.getSize(find.byType(ClassicHomeRankRail)).width;
+    final viewport = tester.getRect(find.byType(SingleChildScrollView));
+    expect(viewport.right, closeTo(_moreRect(tester).left - 12, 1));
     final first = tester.getRect(find.text('榜单1'));
     expect(first.left, closeTo(title.left, 1), reason: '窄屏下首标签仍贴齐标题');
     await tester.drag(find.text('榜单1'), const Offset(-1600, 0));
@@ -1640,13 +1653,13 @@ void main() {
     final last = tester.getRect(find.text('榜单9'));
     expect(
       last.right,
-      closeTo(railWidth - title.left, 1),
-      reason: '窄屏下末标签文字右缘仍贴齐卡片右留白',
+      closeTo(viewport.right - title.left, 1),
+      reason: '窄屏下末标签文字右缘仍贴标签视口右留白',
     );
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('loading 态标签行两端仍与标题、卡片对齐', (tester) async {
+  testWidgets('loading 态标签首端与标题对齐，末端贴标签视口右留白', (tester) async {
     await tester.binding.setSurfaceSize(const Size(390, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     addTearDown(() => tester.pumpWidget(const SizedBox.shrink()));
@@ -1667,7 +1680,8 @@ void main() {
     // 数据未到时标签行照常渲染：对齐规则与 loading 无关，不能被加载分支
     // 吃掉。转圈是无限动画，这里不能用 pumpAndSettle。
     final title = tester.getRect(find.text('排行榜'));
-    final railWidth = tester.getSize(find.byType(ClassicHomeRankRail)).width;
+    final viewport = tester.getRect(find.byType(SingleChildScrollView));
+    expect(viewport.right, closeTo(_moreRect(tester).left - 12, 1));
     final first = tester.getRect(find.text('榜单1'));
     expect(first.left, closeTo(title.left, 1), reason: 'loading 态首标签仍贴齐标题');
     await tester.drag(find.text('榜单1'), const Offset(-1600, 0));
@@ -1676,8 +1690,8 @@ void main() {
     final last = tester.getRect(find.text('榜单9'));
     expect(
       last.right,
-      closeTo(railWidth - title.left, 1),
-      reason: 'loading 态末标签文字右缘仍贴齐卡片右留白',
+      closeTo(viewport.right - title.left, 1),
+      reason: 'loading 态末标签文字右缘仍贴标签视口右留白',
     );
     expect(tester.takeException(), isNull);
   });
