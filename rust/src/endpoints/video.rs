@@ -555,14 +555,11 @@ fn handle_video<'a>(ctx: &'a Ctx, params: &'a Params) -> BoxFuture<'a, ApiResult
             .find_map(|body| episode_vertical_value(&body.parsed.root));
 
         if matches!(resolved, VideoSourceResolution::NotFound) {
-            if let Some(mut raw) = bodies
+            if let Some(raw) = bodies
                 .iter()
                 .find(|body| legacy_raw_response_has_playable_url(body.parsed.as_ref()))
                 .map(|body| body.parsed.root.clone())
             {
-                if let Some(root) = raw.as_object_mut() {
-                    root.insert("source_trace_id".to_string(), json!(source_trace_id));
-                }
                 log::info!(
                     "stream trace request={source_trace_id} event=final mode={} selected_source={selected_source} bodies={} quality_count=0 result=legacy_raw",
                     if stream_mode { "stream" } else { "single" },
