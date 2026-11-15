@@ -111,6 +111,9 @@ double homeCardExtent(
 ///
 /// 旧版的「橙色竖条 + 罗盘图标 + 20sp 副标题」是三件套装饰，去掉了；层级
 /// 由字号和留白承担。`action` 放在同一行右端（榜单的「更多」）。
+///
+/// `action` 会参与行高；若它的热区高于标题、且下方紧接标签行，调用方
+/// 应将操作区放在「标题 + 标签」旁边的独立列，保持标题下方的间距。
 class HomeSectionHeader extends StatelessWidget {
   final String title;
   final Widget? action;
@@ -125,24 +128,22 @@ class HomeSectionHeader extends StatelessWidget {
     this.action,
     this.gutter = homeGutter,
     this.topPadding = homeSectionGap,
-    this.alignActionToTop = false,
+    this.bottomPadding = homeHeaderGap,
   });
 
   /// 与上一段内容的间距。默认 [homeSectionGap]；紧跟分类条的第一段传小值。
   final double topPadding;
 
-  /// 操作区需要更大的点击高度时，让标题和操作内容都从顶部对齐。
-  final bool alignActionToTop;
+  /// 与下一段内容的间距。默认 [homeHeaderGap]；下一段自带上下留白（如
+  /// 榜单标签的 48dp 热区）时传 0，避免两段空白叠加。
+  final double bottomPadding;
 
   @override
   Widget build(BuildContext context) {
     final palette = HomePalette.of(context);
     return Padding(
-      padding: EdgeInsets.fromLTRB(gutter, topPadding, gutter, homeHeaderGap),
+      padding: EdgeInsets.fromLTRB(gutter, topPadding, gutter, bottomPadding),
       child: Row(
-        crossAxisAlignment: alignActionToTop
-            ? CrossAxisAlignment.start
-            : CrossAxisAlignment.center,
         children: [
           Expanded(
             child: Text(
