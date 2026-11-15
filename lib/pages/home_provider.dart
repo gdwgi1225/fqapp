@@ -126,6 +126,7 @@ class _TabFeed {
   Map<String, int> searchOffsets = const {};
   bool manjuSearchExhausted = false;
   bool mangaSearchExhausted = false;
+  bool audioSearchExhausted = false;
   final Set<String> seen = {};
   bool recommendExhausted = false;
   bool hasMore = true;
@@ -159,6 +160,7 @@ class _TabFeed {
     searchOffsets = const {};
     manjuSearchExhausted = false;
     mangaSearchExhausted = false;
+    audioSearchExhausted = false;
     seen.clear();
     recommendExhausted = false;
     hasMore = true;
@@ -233,6 +235,7 @@ class _FetchedFeed {
   final Map<String, int> searchOffsets;
   final bool manjuSearchExhausted;
   final bool mangaSearchExhausted;
+  final bool audioSearchExhausted;
   final bool searchCanAdvance;
   final bool recommendExhausted;
   final bool hasMore;
@@ -248,6 +251,7 @@ class _FetchedFeed {
     this.searchOffsets = const {},
     this.manjuSearchExhausted = false,
     this.mangaSearchExhausted = false,
+    this.audioSearchExhausted = false,
     this.searchCanAdvance = false,
     required this.recommendExhausted,
     required this.hasMore,
@@ -370,6 +374,7 @@ class HomeNotifier extends Notifier<HomeState> {
 
   final HomepageLoaderWithIndex _indexedHomepageLoader;
   final SearchTabsLoader _searchLoader;
+  final CategorySearchLoader _audioSearchLoader;
   final CategorySearchLoader _mangaSearchLoader;
   final CategorySearchLoader _manjuSearchLoader;
 
@@ -421,6 +426,7 @@ class HomeNotifier extends Notifier<HomeState> {
     /// 需要顶栏下标的加载器；缺省走 [ApiClient.homepagePage]。
     HomepageLoaderWithIndex? indexedHomepageLoader,
     SearchTabsLoader? searchLoader,
+    CategorySearchLoader? audioSearchLoader,
     CategorySearchLoader? mangaSearchLoader,
     CategorySearchLoader? manjuSearchLoader,
     HomeFeedCache? feedCache,
@@ -446,6 +452,12 @@ class HomeNotifier extends Notifier<HomeState> {
                    sessionId: sessionId,
                  )),
        _searchLoader = searchLoader ?? ApiClient.instance.searchTabs,
+       _audioSearchLoader =
+           audioSearchLoader ??
+           (searchLoader == null
+               ? _searchAudio
+               : ({int offset = 0}) =>
+                     searchLoader('听书', page: offset ~/ 10 + 1)),
        _mangaSearchLoader =
            mangaSearchLoader ??
            (searchLoader == null
@@ -459,6 +471,14 @@ class HomeNotifier extends Notifier<HomeState> {
                : ({int offset = 0}) =>
                      searchLoader('漫剧', page: offset ~/ 10 + 1));
 
+  static Future<List<SearchTab>> _searchAudio({int offset = 0}) =>
+      ApiClient.instance.searchTabs('听书', tabType: 2, offset: offset);
+
+  Future<List<SearchTab>> _requestAudioSearch({int offset = 0}) {
+    AppLog.d('home', '听书搜索请求 offset=$offset');
+    return _audioSearchLoader(offset: offset);
+  }
+
   static Future<List<SearchTab>> _searchManga({int offset = 0}) =>
       ApiClient.instance.searchTabs('漫画', tabType: 8, offset: offset);
 
@@ -470,6 +490,7 @@ class HomeNotifier extends Notifier<HomeState> {
     int page = 1,
     int offset = 0,
   }) => switch (name) {
+    '听书' => _requestAudioSearch(offset: offset),
     '漫画' => _mangaSearchLoader(offset: offset),
     '漫剧' => _manjuSearchLoader(offset: offset),
     _ => _searchLoader(name, page: page),
@@ -877,9 +898,9 @@ class HomeNotifier extends Notifier<HomeState> {
         }
       } catch (loaderError) {
         // Older backends may not expose recommendations; search below keeps the
-        // tab usable — but only when it actually produces something. An empty
-        // fallback is a dead page and must surface the original error (the
-        // stream footer's retry state depends on it).
+        // tab usable. An empty fallback without an advancing cursor is still a
+        // failed page and must surface the original error (the stream footer's
+        // retry state depends on it).
         loaderFailure = loaderError;
       }
     }
@@ -897,10 +918,18 @@ class HomeNotifier extends Notifier<HomeState> {
   ) async {
     final search = await _searchByType(searchName);
     final items = _searchItems(search, searchName, kind);
-    if (items.isEmpty && loaderFailure != null) {
+    final progress = _searchProgress(search, searchName, items, offset: 0);
+    if (searchName == '听书') {
+      AppLog.d(
+        'home',
+        '听书搜索兜底 offset=0 items=${items.length} '
+            'next=${progress.nextOffset} hasMore=${progress.hasMore}',
+      );
+    }
+    final audioCursorAfterFailure = searchName == '听书' && progress.hasCursor;
+    if (items.isEmpty && loaderFailure != null && !audioCursorAfterFailure) {
       throw loaderFailure;
     }
-    final progress = _searchProgress(search, searchName, items, offset: 0);
     return _FetchedFeed(
       items: items,
       nextOffset: null,
@@ -956,7 +985,7 @@ class HomeNotifier extends Notifier<HomeState> {
     videoFuture: _attempt(_searchLoader('短剧')),
     manjuFuture: _attempt(_loadAllManju()),
     mangaFuture: _attempt(_mangaSearchLoader()),
-    audioFuture: _attempt(_searchLoader('听书')),
+    audioFuture: _attempt(_requestAudioSearch()),
     previous: null,
   );
 
@@ -975,7 +1004,6 @@ class HomeNotifier extends Notifier<HomeState> {
   }) async {
     final initial = previous == null;
     final videoPage = (previous?.searchPages['短剧'] ?? 0) + 1;
-    final audioPage = (previous?.searchPages['听书'] ?? 0) + 1;
     final recommendation = await recommendationFuture;
     final video = await videoFuture;
     final manju = await manjuFuture;
@@ -1007,18 +1035,45 @@ class HomeNotifier extends Notifier<HomeState> {
       mangaItems,
       offset: previous?.searchOffsets['漫画'] ?? 0,
     );
-    final groups = <List<MediaItem>>[
-      if (recommendation.value != null) recommendation.value!.items,
-      if (video.value != null) _searchItems(video.value!, '短剧', 'video'),
+    final audioItems = _searchItems(
+      audio.value ?? const <SearchTab>[],
+      '听书',
+      'audio',
+    );
+    final audioProgress = _searchProgress(
+      audio.value ?? const <SearchTab>[],
+      '听书',
+      audioItems,
+      offset: previous?.searchOffsets['听书'] ?? 0,
+    );
+    if (audio.value != null) {
+      AppLog.d(
+        'home',
+        '全部听书兜底 offset=${previous?.searchOffsets['听书'] ?? 0} '
+            'items=${audioItems.length} next=${audioProgress.nextOffset} '
+            'hasMore=${audioProgress.hasMore}',
+      );
+    }
+    final recommendationItems =
+        recommendation.value?.items ?? const <MediaItem>[];
+    final videoItems = video.value == null
+        ? const <MediaItem>[]
+        : _searchItems(video.value!, '短剧', 'video');
+    final nonAudioGroups = <List<MediaItem>>[
+      recommendationItems,
+      videoItems,
       manjuItems,
       mangaItems,
-      if (audio.value != null) _searchItems(audio.value!, '听书', 'audio'),
     ];
+    final groups = <List<MediaItem>>[...nonAudioGroups, audioItems];
     final recommendationPage = recommendation.value;
     final items = _interleave(groups);
     // 翻页时推荐源失败、其余兜底源也没产出，不能当成一页空「成功」——否则
     // loadMore 的成功状态会让流尾把加载失败谎报成「已显示全部内容」。
-    if (!initial && items.isEmpty && recommendationPage == null) {
+    if (!initial &&
+        items.isEmpty &&
+        recommendationPage == null &&
+        !audioProgress.hasCursor) {
       throw recommendation.error ?? StateError('翻页失败');
     }
     final novelPage = recommendationPage?.searchPage ?? (initial ? 0 : null);
@@ -1031,29 +1086,35 @@ class HomeNotifier extends Notifier<HomeState> {
         ...?previous?.searchPages,
         '小说': ?novelPage,
         if (video.value != null) '短剧': videoPage,
-        if (audio.value != null) '听书': audioPage,
       },
       searchOffsets: {
         ...?previous?.searchOffsets,
         if (manjuGroup?.searchOffset != null) '漫剧': manjuGroup!.searchOffset!,
         if (mangaProgress.nextOffset != null) '漫画': mangaProgress.nextOffset!,
+        if (audioProgress.nextOffset != null) '听书': audioProgress.nextOffset!,
       },
       searchCanAdvance:
-          (manjuGroup?.searchCanAdvance ?? false) || mangaProgress.hasCursor,
+          (manjuGroup?.searchCanAdvance ?? false) ||
+          mangaProgress.hasCursor ||
+          audioProgress.hasCursor,
       manjuSearchExhausted:
           (previous?.manjuSearchExhausted ?? false) ||
           (manjuGroup?.searchExhausted ?? false),
       mangaSearchExhausted:
           (previous?.mangaSearchExhausted ?? false) ||
           (manga.value != null && !mangaProgress.hasMore),
+      audioSearchExhausted:
+          (previous?.audioSearchExhausted ?? false) ||
+          (audio.value != null && !audioProgress.hasMore),
       recommendExhausted:
           recommendationPage?.recommendExhausted ??
           (previous?.recommendExhausted ?? true),
       hasMore:
-          items.isNotEmpty ||
+          nonAudioGroups.any((group) => group.isNotEmpty) ||
           recommendationPage?.nextOffset != null ||
           (manjuGroup?.hasMore ?? false) ||
-          mangaProgress.hasMore,
+          mangaProgress.hasMore ||
+          audioProgress.hasMore,
     );
   }
 
@@ -1195,15 +1256,23 @@ class HomeNotifier extends Notifier<HomeState> {
       'tab=$tabIndex 搜索兜底 query=$searchName page=$pageNumber '
           'buckets=${_searchBuckets(searchTabs)} 取到=${items.length}',
     );
-    if (items.isEmpty && loaderFailure != null) {
-      throw loaderFailure;
-    }
     final progress = _searchProgress(
       searchTabs,
       searchName,
       items,
       offset: searchOffset,
     );
+    if (searchName == '听书') {
+      AppLog.d(
+        'home',
+        '听书搜索兜底 offset=$searchOffset items=${items.length} '
+            'next=${progress.nextOffset} hasMore=${progress.hasMore}',
+      );
+    }
+    final audioCursorAfterFailure = searchName == '听书' && progress.hasCursor;
+    if (items.isEmpty && loaderFailure != null && !audioCursorAfterFailure) {
+      throw loaderFailure;
+    }
     return _FetchedFeed(
       items: items,
       nextOffset: null,
@@ -1230,9 +1299,9 @@ class HomeNotifier extends Notifier<HomeState> {
       ..recommendExhausted = feed.recommendExhausted;
     bookFeed.seen.addAll(feed.seen);
     final videoPage = (feed.searchPages['短剧'] ?? 0) + 1;
-    final audioPage = (feed.searchPages['听书'] ?? 0) + 1;
     final manjuOffset = feed.searchOffsets['漫剧'] ?? 0;
     final mangaOffset = feed.searchOffsets['漫画'] ?? 0;
+    final audioOffset = feed.searchOffsets['听书'] ?? 0;
     return _assembleAllSources(
       recommendationFuture: _attempt(_loadNext(1, bookFeed)),
       videoFuture: _attempt(_searchLoader('短剧', page: videoPage)),
@@ -1242,7 +1311,9 @@ class HomeNotifier extends Notifier<HomeState> {
       mangaFuture: feed.mangaSearchExhausted
           ? Future.value(const _Attempt<List<SearchTab>>.value([]))
           : _attempt(_mangaSearchLoader(offset: mangaOffset)),
-      audioFuture: _attempt(_searchLoader('听书', page: audioPage)),
+      audioFuture: feed.audioSearchExhausted
+          ? Future.value(const _Attempt<List<SearchTab>>.value([]))
+          : _attempt(_requestAudioSearch(offset: audioOffset)),
       previous: feed,
     );
   }
@@ -1286,6 +1357,7 @@ class HomeNotifier extends Notifier<HomeState> {
       ..searchOffsets = fetched.searchOffsets
       ..manjuSearchExhausted = fetched.manjuSearchExhausted
       ..mangaSearchExhausted = fetched.mangaSearchExhausted
+      ..audioSearchExhausted = fetched.audioSearchExhausted
       ..recommendExhausted = fetched.recommendExhausted
       ..hasMore = fetched.hasMore
       ..loaded = true;
@@ -1368,12 +1440,13 @@ class HomeNotifier extends Notifier<HomeState> {
     List<MediaItem> items, {
     required int offset,
   }) {
-    if (label != '漫剧' && label != '漫画') {
+    if (label != '漫剧' && label != '漫画' && label != '听书') {
       return (hasMore: items.isNotEmpty, nextOffset: null, hasCursor: false);
     }
     for (final tab in separateManjuSearchTabs(tabs)) {
-      if (tab.title != label ||
-          (tab.hasMore == null && tab.nextOffset == null)) {
+      final matchesLabel =
+          tab.title == label || (label == '听书' && tab.title == '有声');
+      if (!matchesLabel || (tab.hasMore == null && tab.nextOffset == null)) {
         continue;
       }
       final next = tab.nextOffset;
