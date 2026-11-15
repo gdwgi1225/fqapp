@@ -40,7 +40,7 @@ class DramaDownloadTask {
   /// 「边看边往后缓存」自动排的任务（见 [CachedEpisode.auto]）。
   final bool auto;
 
-  /// 下载画质上限（1080 / 720 / 480）；null = 取最高档。
+  /// 下载画质上限，以解码短边表示（1080 / 720 / 480）；null = 取最高档。
   ///
   /// 每集实际可选档位由取流接口决定，所以这里存的是「我最多接受多高」，
   /// 由 [DramaDownloader.pickVariant] 在可选集合里挑最接近的一档。
@@ -145,6 +145,7 @@ class DramaDownloader extends ValueNotifier<List<DramaDownloadTask>> {
                   index: cached.index,
                   keyHex: cached.keyHex,
                   height: cached.height,
+                  qualityHeight: cached.qualityHeight,
                   variantName: cached.variantName,
                   bytes: cached.bytes,
                   filePath: cached.filePath,
@@ -541,6 +542,7 @@ class DramaDownloader extends ValueNotifier<List<DramaDownloadTask>> {
                 keyHex: variant!.keyHex,
                 rendition: variant.name,
                 height: variant.height,
+                qualityHeight: variant.qualityHeight,
               ),
               record: _record(run),
               clientFactory: _clientFactory,
@@ -821,10 +823,9 @@ class DramaDownloader extends ValueNotifier<List<DramaDownloadTask>> {
   /// 与官方一致的画质策略：固定取最高档；上游只有单流时用主地址。
   /// 在一集的可选档位里挑一档下载。
   ///
-  /// [maxHeight] 为 null 时取最高档（原来的行为）。给了上限就取「不超过
-  /// 上限的最高一档」——省流量的人要的是 720P，给他 480P 是错的；如果这集
-  /// 最小的一档也比上限高（比如只有 1080P），那就用最小的一档，总不能
-  /// 因为挑不到就失败。
+  /// [maxHeight] 是短边质量上限。null 时取已知 quality 的最高档；没有
+  /// known quality 时保留上游 best-first 的第一项。给了上限就取「不超过
+  /// 上限的最高一档」；若每档都更高，则取已知 quality 的最低档。
   @visibleForTesting
   static EpisodeVariant? pickVariant(EpisodeSource source, {int? maxHeight}) {
     if (source.variants.isEmpty) {
@@ -834,20 +835,22 @@ class DramaDownloader extends ValueNotifier<List<DramaDownloadTask>> {
         url: source.url,
         keyHex: source.keyHex,
         height: 0,
+        qualityHeight: 0,
       );
     }
     if (maxHeight == null) {
-      return source.variants.reduce((a, b) => a.height >= b.height ? a : b);
+      final known = source.variants.where((v) => v.qualityHeight > 0);
+      if (known.isEmpty) return source.variants.first;
+      return known.reduce((a, b) => a.qualityHeight >= b.qualityHeight ? a : b);
     }
-    // height <= 0 表示上游没给高度，只能当作最差候选。
-    final known = source.variants.where((v) => v.height > 0).toList();
+    final known = source.variants.where((v) => v.qualityHeight > 0).toList();
     if (known.isEmpty) {
-      return source.variants.reduce((a, b) => a.height >= b.height ? a : b);
+      return source.variants.first;
     }
-    final fits = known.where((v) => v.height <= maxHeight).toList()
-      ..sort((a, b) => b.height.compareTo(a.height));
+    final fits = known.where((v) => v.qualityHeight <= maxHeight).toList()
+      ..sort((a, b) => b.qualityHeight.compareTo(a.qualityHeight));
     if (fits.isNotEmpty) return fits.first;
-    return known.reduce((a, b) => a.height <= b.height ? a : b);
+    return known.reduce((a, b) => a.qualityHeight <= b.qualityHeight ? a : b);
   }
 
   /// 默认取流：绕过播放页的 2 分钟缓存直接走 `/api/content`，下载器
@@ -874,6 +877,7 @@ class DramaDownloader extends ValueNotifier<List<DramaDownloadTask>> {
       keyHex: cached.keyHex,
       rendition: cached.variantName,
       height: cached.height,
+      qualityHeight: cached.qualityHeight,
       total: cached.bytes,
       requestedDigest: null,
       effectiveDigest: null,

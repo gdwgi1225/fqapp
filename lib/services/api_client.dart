@@ -1586,7 +1586,11 @@ class ApiClient {
         final payload = _decodeEnvelope(statusCode, bodyBytes);
         final items = parseMediaItems(
           payload,
-          kind: tabType == 24 ? 'manju' : 'video',
+          // The second segment is a mixed recommendation stream. Let the card
+          // metadata decide whether each item is a video, book, audio book,
+          // manga or manju; forcing `video` here turns a book card into a
+          // request for `/api/v1/videos/<book-id>`.
+          kind: tabType == 24 ? 'manju' : null,
         );
         if (items.isEmpty) return null;
         final cells = parseHomeCells(payload);

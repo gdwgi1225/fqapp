@@ -214,7 +214,7 @@ class _DramaDownloadSheetState extends State<DramaDownloadSheet> {
       );
       if (proceed != true) return;
     }
-    final height = DramaCachePreferences.instance.downloadHeight.value;
+    final qualityHeight = DramaCachePreferences.instance.downloadHeight.value;
     await _downloader.enqueue(
       drama: CachedDrama(
         id: widget.seriesId,
@@ -224,7 +224,7 @@ class _DramaDownloadSheetState extends State<DramaDownloadSheet> {
       ),
       episodes: selected,
       // 0 = 最高档，交给引擎在每集实际给到的档位里挑。
-      maxHeight: height == 0 ? null : height,
+      maxHeight: qualityHeight == 0 ? null : qualityHeight,
     );
     if (mounted) setState(_selected.clear);
   }
@@ -417,7 +417,7 @@ class _DramaDownloadSheetState extends State<DramaDownloadSheet> {
     );
   }
 
-  /// 下载画质：每集实际可选档位由取流接口决定，所以这里给的是「上限」。
+  /// 下载画质：短边质量上限；每集实际档位由取流接口决定。
   ///
   /// 以前下载器写死取最高档，用户既看不到也选不了 —— 一集 1080P 动辄
   /// 五六十 MB，想省空间的人毫无办法。
@@ -426,13 +426,14 @@ class _DramaDownloadSheetState extends State<DramaDownloadSheet> {
     final current = prefs.downloadHeight.value;
     // 横向可滚：窄屏（360dp）上四个 chip 加标签放不下一行。
     // 真实档位优先：同一高度只留一项（上游偶尔给两条同高度不同码率的流），
-    // 按高度从高到低排；0 永远排最前，表示「最高」。
+    // 按短边质量从高到低排；0 永远排最前，表示「最高」。
     final actual = <int, String>{};
     for (final variant in widget.qualities) {
-      if (variant.height <= 0) continue;
+      final quality = variant.qualityHeight;
+      if (quality <= 0) continue;
       actual.putIfAbsent(
-        variant.height,
-        () => variant.name.isEmpty ? '${variant.height}P' : variant.name,
+        quality,
+        () => variant.name.isEmpty ? '${quality}P' : variant.name,
       );
     }
     final options = actual.isEmpty
