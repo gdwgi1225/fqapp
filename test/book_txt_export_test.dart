@@ -96,7 +96,7 @@ void main() {
           chapter('2', '第二章 继续'),
         ],
         chapterLoader: (chapter) async => chapter.itemId == '1'
-            ? '\uFEFF\r\n　第一章 开端\r\n\r\n第一段\r\n\u200B\r\n第二段\r\n字面 <tag> &amp;\r\n \u00A0\r\n'
+            ? '\uFEFF\r\n　第一章 开端\r\n\r\n第一段\r\n\u200B \u200B \u200B\r\n第二段\r\n字面 <tag> &amp;\r\n \u200B \u00A0 \u200B \u00A0 \u200B \r\n'
             : '第二章 继续\n\n正文二\n第二章 继续\n引用结束\n\n',
         sink: sink,
       );

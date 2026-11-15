@@ -171,17 +171,7 @@ class BookTxtExport extends ValueNotifier<BookTxtExportState> {
       try {
         final text = await chapterLoader(chapter).timeout(timeout);
         if (!_alive(job)) return null;
-        final body = ChapterContent.isStructuredCache(text)
-            ? splitChapterParagraphs(
-                ChapterContent.fromCacheText(
-                  text,
-                ).withoutLeadingTitle(chapter.title).legacyText,
-              ).join('\n')
-            : splitChapterParagraphs(
-                text,
-                chapterTitle: chapter.title,
-              ).join('\n');
-        return body.isEmpty ? null : body;
+        return exportChapterBody(text, chapterTitle: chapter.title);
       } catch (_) {
         // Prefetched failures may never be awaited after cancellation.
         return null;
@@ -273,6 +263,37 @@ String _report(String title, ExportTarget target, int completed, int failed) {
   final missing = failed == 0 ? '' : '，$failed 章取文失败，已保留标题';
   return '已导出《$title》$completed 章$missing\n$where';
 }
+
+/// Produces the body placed below one chapter's exported `# title` line.
+///
+/// Cache and network input share this path so title removal and invisible
+/// separator cleanup have one owner. Invisible-only paragraphs are discarded
+/// before the title lookup, allowing captions and images to stay in place while
+/// a later body paragraph that repeats the title remains untouched.
+String? exportChapterBody(String text, {required String chapterTitle}) {
+  final source = ChapterContent.fromCacheText(text);
+  final blocks = <ChapterBlock>[
+    for (final block in source.blocks)
+      if (block is! ChapterParagraph || _hasExportText(block.text)) block,
+  ];
+  final normalized = ChapterContent(
+    blocks: blocks,
+    legacyText: _cleanExportText(source.legacyText),
+    illustrationsChecked: source.illustrationsChecked,
+    paragraphIdsChecked: source.paragraphIdsChecked,
+    timelineChecked: source.timelineChecked,
+  ).withoutLeadingTitle(chapterTitle);
+  final body = _cleanExportText(normalized.legacyText);
+  return body.isEmpty ? null : body;
+}
+
+String _cleanExportText(String text) =>
+    splitChapterParagraphs(text).where(_hasExportText).join('\n');
+
+bool _hasExportText(String text) =>
+    text.replaceAll(_exportBlankMarkers, '').isNotEmpty;
+
+final _exportBlankMarkers = RegExp(r'[\s\u200B\uFEFF]');
 
 /// `<书名>.txt`, folded into a name a Downloads entry accepts: separators and
 /// other reserved characters become `_`, control characters are dropped, and

@@ -32,10 +32,12 @@ void main() {
         blocks: const [
           ChapterImage(url: 'https://images.test/cover'),
           ChapterParagraph('图注', isImageCaption: true),
+          ChapterParagraph('\u200B \u200B \u200B'),
           ChapterParagraph('第一章'),
           ChapterParagraph('第一章'),
           ChapterParagraph('缓存正文'),
           ChapterParagraph('字面 <tag> &amp;'),
+          ChapterParagraph('\u200B \u200B \u200B'),
         ],
       ).toCacheText(),
     );
@@ -45,6 +47,20 @@ void main() {
   testWidgets('导出复用缓存并补取最新目录缺章，写进系统下载目录', (tester) async {
     SharedPreferences.setMockInitialValues({});
     final cache = await cachedBook();
+    await cache.saveBook(
+      CachedBook(id: 'book-1', title: '测试书', chapters: [first, second]),
+    );
+    await cache.write(
+      bookId: 'book-1',
+      chapterId: '2',
+      title: '第二章',
+      text: ChapterContent(
+        blocks: const [
+          ChapterParagraph('第二章'),
+          ChapterParagraph('\u200B \u200B \u200B'),
+        ],
+      ).toCacheText(),
+    );
     final sink = _RecordingSink();
     final requested = <String>[];
     await tester.pumpWidget(
@@ -69,10 +85,11 @@ void main() {
     expect(sink.calls.single.fileName, '测试书.txt');
     expect(
       sink.calls.single.text,
-      '# 第一章\n图注\n第一章\n缓存正文\n字面 <tag> &amp;\n\n# 第二章\n正文2\n\n',
+      '# 第一章\n图注\n第一章\n缓存正文\n字面 <tag> &amp;\n\n'
+      '# 第二章\n正文2\n\n',
     );
     expect(requested, ['2']);
-    expect(await cache.cachedChapterIds('book-1'), {'1'});
+    expect(await cache.cachedChapterIds('book-1'), {'1', '2'});
     expect(find.textContaining('已导出《测试书》2 章'), findsOneWidget);
     expect(find.textContaining('/sdcard/Download/测试书.txt'), findsOneWidget);
     // 行内其余操作没有被这次改动挤掉。
