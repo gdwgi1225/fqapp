@@ -9,6 +9,7 @@ import 'package:fqapp/pages/cached_books_page.dart';
 import 'package:fqapp/services/app_theme_style.dart';
 import 'package:fqapp/services/book_txt_export.dart';
 import 'package:fqapp/services/chapter_cache_store.dart';
+import 'package:fqapp/services/chapter_text_formatter.dart';
 import 'package:fqapp/widgets/wenku/wenku_ui.dart';
 
 import 'support/app_ui_host.dart';
@@ -27,22 +28,35 @@ void main() {
       bookId: 'book-1',
       chapterId: '1',
       title: '第一章',
-      text: '缓存正文',
+      text: ChapterContent(
+        blocks: const [
+          ChapterImage(url: 'https://images.test/cover'),
+          ChapterParagraph('图注', isImageCaption: true),
+          ChapterParagraph('第一章'),
+          ChapterParagraph('第一章'),
+          ChapterParagraph('缓存正文'),
+          ChapterParagraph('字面 <tag> &amp;'),
+        ],
+      ).toCacheText(),
     );
     return cache;
   }
 
-  testWidgets('导出整本写进系统下载目录并回报路径', (tester) async {
+  testWidgets('导出复用缓存并补取最新目录缺章，写进系统下载目录', (tester) async {
     SharedPreferences.setMockInitialValues({});
     final cache = await cachedBook();
     final sink = _RecordingSink();
+    final requested = <String>[];
     await tester.pumpWidget(
       MaterialApp(
         home: CachedBooksPage(
           cacheStore: cache,
           readerStore: MemoryReaderStore(),
           exportDirectoryLoader: (bookId) async => [first, second],
-          exportChapterLoader: (chapter) async => '正文${chapter.itemId}',
+          exportChapterLoader: (chapter) async {
+            requested.add(chapter.itemId);
+            return '第二章\n\n正文${chapter.itemId}\n　\n';
+          },
           exportSink: sink,
         ),
       ),
@@ -53,7 +67,12 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(sink.calls.single.fileName, '测试书.txt');
-    expect(sink.calls.single.text, '# 第一章\n正文1\n\n# 第二章\n正文2\n\n');
+    expect(
+      sink.calls.single.text,
+      '# 第一章\n图注\n第一章\n缓存正文\n字面 <tag> &amp;\n\n# 第二章\n正文2\n\n',
+    );
+    expect(requested, ['2']);
+    expect(await cache.cachedChapterIds('book-1'), {'1'});
     expect(find.textContaining('已导出《测试书》2 章'), findsOneWidget);
     expect(find.textContaining('/sdcard/Download/测试书.txt'), findsOneWidget);
     // 行内其余操作没有被这次改动挤掉。
@@ -86,7 +105,7 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 20));
 
-    expect(find.text('导出 0/2 章'), findsOneWidget);
+    expect(find.text('导出 1/2 章'), findsOneWidget);
     expect(find.byTooltip('取消导出'), findsOneWidget);
 
     await tester.tap(exportButton);
@@ -97,7 +116,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(sink.calls, isEmpty);
-    expect(find.text('导出 0/2 章'), findsNothing);
+    expect(find.text('导出 1/2 章'), findsNothing);
     expect(find.byTooltip('导出 TXT 文件'), findsOneWidget);
   });
 
@@ -182,14 +201,14 @@ void main() {
     await tester.tap(find.byKey(const Key('cached_book_export_book-1')));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 20));
-    expect(find.text('导出 0/2 章'), findsOneWidget);
+    expect(find.text('导出 1/2 章'), findsOneWidget);
 
     await styleStore.select(AppThemeStyle.classic);
     await tester.pumpAndSettle();
 
     expect(find.byType(ClassicFeaturePage), findsOneWidget);
     expect(tester.state(find.byType(CachedBooksPage)), same(state));
-    expect(find.text('导出 0/2 章'), findsOneWidget);
+    expect(find.text('导出 1/2 章'), findsOneWidget);
     expect(find.byTooltip('取消导出'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('cached_book_export_book-1')));
@@ -252,7 +271,7 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 20));
     expect(directoryCalls, 1);
-    expect(find.text('导出 0/2 章'), findsOneWidget);
+    expect(find.text('导出 1/2 章'), findsOneWidget);
 
     // 进度行改变了行高，切换前重新取一次锚点。
     final before = _firstVisibleExportBook(tester, list);
@@ -262,7 +281,7 @@ void main() {
     expect(find.byType(ClassicFeaturePage), findsOneWidget);
     expect(tester.state(find.byType(CachedBooksPage)), same(pageState));
     expect(directoryCalls, 1);
-    expect(find.text('导出 0/2 章'), findsOneWidget);
+    expect(find.text('导出 1/2 章'), findsOneWidget);
     expect(find.byTooltip('取消导出'), findsOneWidget);
     final after = _firstVisibleExportBook(tester, list);
     expect(after, isNotNull);

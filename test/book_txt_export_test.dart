@@ -88,22 +88,26 @@ void main() {
   });
 
   group('BookTxtExport', () {
-    test('assembles the same shape the backend download serves', () async {
+    test('normalizes leading titles and blank lines in directory order', () async {
       final sink = _RecordingSink();
       final export = BookTxtExport(
         directoryLoader: (bookId) async => [
           chapter('1', '第一章 开端'),
           chapter('2', '第二章 继续'),
         ],
-        chapterLoader: (chapter) async =>
-            chapter.itemId == '1' ? '第一段\n第二段' : '正文二',
+        chapterLoader: (chapter) async => chapter.itemId == '1'
+            ? '\uFEFF\r\n　第一章 开端\r\n\r\n第一段\r\n\u200B\r\n第二段\r\n字面 <tag> &amp;\r\n \u00A0\r\n'
+            : '第二章 继续\n\n正文二\n第二章 继续\n引用结束\n\n',
         sink: sink,
       );
 
       await export.start(bookId: 'book-1', title: '测试书');
 
       expect(sink.calls.single.fileName, '测试书.txt');
-      expect(sink.calls.single.text, '# 第一章 开端\n第一段\n第二段\n\n# 第二章 继续\n正文二\n\n');
+      expect(
+        sink.calls.single.text,
+        '# 第一章 开端\n第一段\n第二段\n字面 <tag> &amp;\n\n# 第二章 继续\n正文二\n第二章 继续\n引用结束\n\n',
+      );
       expect(export.value.running, isFalse);
       expect(export.value.completed, 2);
       expect(export.value.failed, 0);
@@ -117,9 +121,11 @@ void main() {
         directoryLoader: (bookId) async => [
           chapter('1', '第一章'),
           chapter('2', '第二章'),
+          chapter('3', '第三章'),
         ],
         chapterLoader: (chapter) async {
           if (chapter.itemId == '2') throw StateError('章节取文失败');
+          if (chapter.itemId == '3') return '第三章\n\n　\u200B\n';
           return '正文一';
         },
         sink: sink,
@@ -127,25 +133,27 @@ void main() {
 
       await export.start(bookId: 'book-1', title: '书');
 
-      expect(sink.calls.single.text, '# 第一章\n正文一\n\n# 第二章\n\n');
-      expect(export.value.completed, 2);
-      expect(export.value.failed, 1);
-      expect(export.value.message, contains('1 章取文失败'));
+      expect(sink.calls.single.text, '# 第一章\n正文一\n\n# 第二章\n\n# 第三章\n\n');
+      expect(export.value.completed, 3);
+      expect(export.value.failed, 2);
+      expect(export.value.message, contains('2 章取文失败'));
     });
 
-    test('reports chapter progress while it runs', () async {
+    test('bounds prefetch and reports chapter progress in order', () async {
       final gate = Completer<void>();
       final seen = <String>[];
+      final requested = <String>[];
+      final sink = _RecordingSink();
       final export = BookTxtExport(
         directoryLoader: (bookId) async => [
-          chapter('1', '一'),
-          chapter('2', '二'),
+          for (var i = 1; i <= 5; i++) chapter('$i', '第$i章'),
         ],
         chapterLoader: (chapter) async {
+          requested.add(chapter.itemId);
           if (chapter.itemId == '1') await gate.future;
-          return '正文';
+          return '正文${chapter.itemId}';
         },
-        sink: _RecordingSink(),
+        sink: sink,
       );
       export.addListener(() {
         final state = export.value;
@@ -157,21 +165,31 @@ void main() {
       final run = export.start(bookId: 'book-1', title: '书');
       await Future<void>.delayed(Duration.zero);
       expect(export.value.running, isTrue);
+      expect(requested, ['1', '2', '3']);
+      expect(export.value.completed, 0);
+      expect(sink.calls, isEmpty);
       gate.complete();
       await run;
 
-      expect(seen, ['0/2', '1/2', '2/2']);
+      expect(requested, ['1', '2', '3', '4', '5']);
+      expect(seen, ['0/5', '1/5', '2/5', '3/5', '4/5', '5/5']);
+      expect(
+        sink.calls.single.text,
+        [for (var i = 1; i <= 5; i++) '# 第$i章\n正文$i\n\n'].join(),
+      );
     });
 
     test('cancelling writes nothing and says so', () async {
       final gate = Completer<void>();
       final sink = _RecordingSink();
+      final requested = <String>[];
       final export = BookTxtExport(
         directoryLoader: (bookId) async => [
-          chapter('1', '一'),
-          chapter('2', '二'),
+          for (var i = 1; i <= 5; i++) chapter('$i', '第$i章'),
         ],
         chapterLoader: (chapter) async {
+          requested.add(chapter.itemId);
+          if (chapter.itemId != '1') throw StateError('后章取文失败');
           await gate.future;
           return '正文';
         },
@@ -186,6 +204,7 @@ void main() {
       await run;
 
       expect(sink.calls, isEmpty);
+      expect(requested, ['1', '2', '3']);
       expect(export.value.running, isFalse);
       expect(export.value.message, contains('已取消导出'));
     });

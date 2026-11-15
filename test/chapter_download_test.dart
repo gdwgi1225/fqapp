@@ -75,63 +75,106 @@ CachedBook _book(int chapterCount) => CachedBook(
 );
 
 void main() {
-  test('双启：运行中再次 start 被忽略，只跑一批', () async {
+  test('双启：三章窗口并发预取，按序写盘且再次 start 被忽略', () async {
+    final gates = <String, Completer<void>>{
+      'c1': Completer<void>(),
+      'c2': Completer<void>(),
+      'c3': Completer<void>(),
+    };
+    final entered = <String, Completer<void>>{
+      'c1': Completer<void>(),
+      'c2': Completer<void>(),
+      'c3': Completer<void>(),
+    };
+    final settled = <String, Completer<void>>{
+      'c1': Completer<void>(),
+      'c2': Completer<void>(),
+      'c3': Completer<void>(),
+    };
+    final loaderCalls = <String>[];
+    var activeLoaders = 0;
+    var maxActiveLoaders = 0;
+    final cache = _FakeChapterCache();
+    final download = ChapterDownload(
+      cache: cache,
+      book: _book(6),
+      loader: (chapter) async {
+        final id = chapter.itemId;
+        loaderCalls.add(id);
+        activeLoaders++;
+        if (activeLoaders > maxActiveLoaders) {
+          maxActiveLoaders = activeLoaders;
+        }
+        entered[id]?.complete();
+        try {
+          await gates[id]?.future;
+          return '正文$id内容……';
+        } finally {
+          settled[id]?.complete();
+          activeLoaders--;
+        }
+      },
+    );
+    addTearDown(download.dispose);
+
+    final first = download.start(startIndex: 0, count: 6);
+    await Future.wait(entered.values.map((completer) => completer.future));
+    expect(loaderCalls, ['c1', 'c2', 'c3']);
+    expect(maxActiveLoaders, 3);
+    expect(download.value.running, isTrue);
+
+    // 第二次 start 在运行中：立即返回，不填充第四个 loader，不重置进度。
+    final callsBeforeSecondStart = List<String>.of(loaderCalls);
+    await download.start(startIndex: 0, count: 6);
+    expect(loaderCalls, callsBeforeSecondStart);
+
+    // 后两章先返回，仍必须等 c1；未提交前不能写盘或推进计数。
+    gates['c2']!.complete();
+    gates['c3']!.complete();
+    await Future.wait([settled['c2']!.future, settled['c3']!.future]);
+    expect(cache.writes, isEmpty);
+    expect(download.value.completed, 0);
+
+    gates['c1']!.complete();
+    await first;
+    expect(loaderCalls, ['c1', 'c2', 'c3', 'c4', 'c5', 'c6']);
+    expect(maxActiveLoaders, 3);
+    expect(
+      [for (final write in cache.writes) write.chapterId],
+      ['c1', 'c2', 'c3', 'c4', 'c5', 'c6'],
+    );
+    expect(download.value.running, isFalse);
+    expect(download.value.completed, 6);
+    expect(download.value.total, 6);
+    expect(download.value.message, isNotNull);
+  });
+
+  test('取消：未消费预取错误被吸收，门开后不补任务也不落盘', () async {
     final gate = Completer<void>();
-    final entered = Completer<void>();
+    final entered = <String, Completer<void>>{
+      'c1': Completer<void>(),
+      'c2': Completer<void>(),
+      'c3': Completer<void>(),
+    };
     final loaderCalls = <String>[];
     final cache = _FakeChapterCache();
     final download = ChapterDownload(
       cache: cache,
-      book: _book(3),
+      book: _book(6),
       loader: (chapter) async {
-        loaderCalls.add(chapter.itemId);
-        if (chapter.itemId == 'c1') {
-          // 第一章的 loader 进来 = 批次已在跑；用门挡住它，好让第二次
-          // start 有机会在运行中发生。
-          if (!entered.isCompleted) entered.complete();
-          await gate.future;
-        }
-        return '正文${chapter.itemId}内容……';
+        final id = chapter.itemId;
+        loaderCalls.add(id);
+        entered[id]?.complete();
+        if (id == 'c1') await gate.future;
+        if (id == 'c3') throw StateError('后章预取失败不会被消费');
+        return '正文$id内容……';
       },
     );
     addTearDown(download.dispose);
 
-    final first = download.start(startIndex: 0, count: 3);
-    await entered.future;
-    expect(download.value.running, isTrue);
-
-    // 第二次 start 在运行中：立即返回，不产生第二次 loader 调用，
-    // 不重置进度、不开第二批。
-    await download.start(startIndex: 0, count: 3);
-    expect(loaderCalls, ['c1']);
-
-    gate.complete();
-    await first;
+    final first = download.start(startIndex: 0, count: 6);
+    await Future.wait(entered.values.map((completer) => completer.future));
     expect(loaderCalls, ['c1', 'c2', 'c3']);
-    expect(cache.writes, hasLength(3));
-    expect(download.value.running, isFalse);
-    expect(download.value.completed, 3);
-    expect(download.value.total, 3);
-    expect(download.value.message, isNotNull);
-  });
-
-  test('取消：门开后不再落盘，已保存数保持 0', () async {
-    final gate = Completer<void>();
-    final entered = Completer<void>();
-    final cache = _FakeChapterCache();
-    final download = ChapterDownload(
-      cache: cache,
-      book: _book(2),
-      loader: (chapter) async {
-        if (!entered.isCompleted) entered.complete();
-        await gate.future;
-        return '正文${chapter.itemId}内容……';
-      },
-    );
-    addTearDown(download.dispose);
-
-    final first = download.start(startIndex: 0, count: 2);
-    await entered.future;
     expect(download.value.running, isTrue);
 
     download.cancel();
@@ -144,6 +187,7 @@ void main() {
     gate.complete();
     await first;
     expect(cache.writes, isEmpty);
+    expect(loaderCalls, ['c1', 'c2', 'c3']);
     expect(download.value.completed, 0);
     expect(download.value.running, isFalse);
     expect(download.value.message, contains('已停止'));

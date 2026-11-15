@@ -177,7 +177,9 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('缓存后 20 章'));
       await tester.pump();
-      expect(requested, ['2']);
+      // The cached first chapter frees one slot; three missing chapters may
+      // be in flight, while only the cached prefix has been published.
+      expect(requested, ['2', '3', '4']);
       expect(delivered, {'1': cached});
       expect(find.text('正在缓存 1 / 20 章'), findsOneWidget);
       expect(
@@ -200,7 +202,7 @@ void main() {
       expect(await cache.cachedChapterIds('book'), {'1'});
       expect(cache.pinned['book'], isNull);
       expect(delivered, {'1': cached});
-      expect(requested, ['2']);
+      expect(requested, ['2', '3', '4']);
       if (close) {
         expect(find.byType(ChapterCacheSheet), findsNothing);
       } else {
