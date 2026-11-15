@@ -847,7 +847,8 @@ class _DramaPageState extends ConsumerState<DramaPage>
     if (!_current.playsInline) return null;
     final items = _visibleItems(ref.read(dramaProvider));
     if (items.isEmpty) return null;
-    return items[_screenIndex.clamp(0, items.length - 1)];
+    final item = items[_screenIndex.clamp(0, items.length - 1)];
+    return isVideoKind(item.kind) ? item : null;
   }
 
   void _syncInline() {
@@ -1018,7 +1019,7 @@ class _DramaPageState extends ConsumerState<DramaPage>
   /// 全页播放页只由「全屏观看」按钮进入。
   void _togglePlay() {
     final item = _currentItem();
-    if (item == null) return;
+    if (item == null || !isVideoKind(item.kind)) return;
     // A tap while the feed is still settling, a route is on top, or the full
     // page player is loading must not fight the state machine.
     if (_modalOpen || _paging || _channelScrolling || _openingId != null) {
@@ -2198,6 +2199,13 @@ class _DramaPageState extends ConsumerState<DramaPage>
     /// `ShortSeriesLandActivity`（`jq3/x.java:4499-4538`）。
     bool openFullScreen = false,
   }) async {
+    if (!isVideoKind(item.kind)) {
+      // A non-video card can only reach here through a stale/misclassified
+      // feed. Open its detail instead of asking the video endpoint for a
+      // stream that cannot exist.
+      if (mounted) _openDetail(item);
+      return;
+    }
     if (_openingId != null) return;
     setState(() => _openingId = item.id);
     // The full page player creates its own native instance, so the inline one
@@ -2320,6 +2328,10 @@ class _DramaPageState extends ConsumerState<DramaPage>
   }
 
   void _openQuickCatalog(MediaItem item) {
+    if (!isVideoKind(item.kind)) {
+      if (mounted) _openDetail(item);
+      return;
+    }
     if (_modalOpen || _openingId != null) return;
     PlayletQuickCatalogSheet.show(
       context,

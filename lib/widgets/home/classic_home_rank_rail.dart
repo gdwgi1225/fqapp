@@ -14,10 +14,11 @@ const double _rankCardGap = 12;
 
 /// 最小触控尺寸（Material 48dp）：「更多」与榜单标签共用。
 const double _minTapSize = 48;
+const double _moreGap = 12;
 
 /// 标签文字在 48dp 热区里的水平内缩上限。列表两端按 `min(它, gutter)`
-/// 抵消，让首尾标签的文字与标题、卡片的 gutter 对齐；gutter 小于它时
-/// 内缩跟着收窄，文字左/右缘仍落在 gutter 上。
+/// 抵消，让首尾标签的文字落在标签视口的 gutter 上；gutter 小于它时
+/// 内缩跟着收窄，首标签仍与标题、卡片的左缘对齐。
 const double _boardTextInset = 10;
 
 /// 选中态下划线的尺寸与到文字的间距（Stack 总高 = 文字 + 两者之和）。
@@ -56,101 +57,89 @@ class ClassicHomeRankRail extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scaler = MediaQuery.textScalerOf(context);
-    // 标题行高（HomeSectionHeader：19sp × 1.25）；单榜单没有标签行借
-    // 热区时，用它算出让位高度。
-    final titleHeight = scaler.scale(19) * 1.25;
     final railHeight =
         _rankCoverHeight +
         8 +
         scaler.scale(13) * 1.35 * 2 +
         4 +
         scaler.scale(11) * 1.3;
-    return Stack(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // 层级：「更多」在下、内容在上。热区（y 8~56）与标签行（从标题
-        // 行底部起）纵向重叠 24dp：标签在上层，标签自己的 InkWell 优先；
-        // 标签行本身是 translucent，重叠区里没有标签的空隙放行给下层
-        // 「更多」，点击不再丢失到滚动层。注意内容溢出时，3 字榜名的热区
-        // 横向范围会被单个标签完全覆盖，点热区下半会切换榜单——这是
-        // 「标签优先」的取舍，热区并未因此恢复完整的 48dp；要全高可点
-        // 得把热区移出标签行，会牺牲 #384 的 12.7dp 间距。
-        // 另一条隐式依赖：上层标题是 HomeSectionHeader 的 Expanded(Text)，
-        // 它的命中矩形右缘止于右侧 48dp 占位，恰好不进入「更多」的 x 范围。
-        // 标题行若改成全宽可点控件，必须先把右侧 48dp 让出来，否则「更多」
-        // 会被整块吞掉，且现有没有用例会报警。
-        Positioned(
-          top: 8,
-          right: gutter,
-          child: ClassicHomeBlockMore(onTap: onMore),
-        ),
-        Column(
+        Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            HomeSectionHeader(
-              title: title,
-              gutter: gutter,
-              // 零高占位，只给「更多」留水平空间；按钮本体浮在下面的
-              // 覆盖层里。若把 48 高的按钮当 action 传进来，标题行会被撑高
-              // 到 48dp，标题底部到榜单标签空出近 50dp（#372 回归，#384）。
-              action: const SizedBox(width: _minTapSize),
-              // 首页分类条下面的第一段：标签条已经有下缘留白，这里再叠 20 会让
-              // 「标签 → 排行榜」空出三十多个像素，中间一片空白。
-              topPadding: 8,
-              // 标签行自带的 48dp 热区上下各留 12.7dp 空白，标题下方不再
-              // 叠 12；下划线到卡片的间距也由热区下缘承担（不再加 SizedBox）。
-              bottomPadding: 0,
-            ),
-            if (names.length > 1)
-              _BoardNames(
-                names: names,
-                selectedIndex: selectedIndex,
-                onSelect: onSelect,
-                gutter: gutter,
-              )
-            else
-              // 没有标签行时热区不存在，自己补回标题到卡片的间距；但卡片
-              // 必须落在「更多」热区（top 8 + 48）下方：否则卡片横向排到
-              // 右缘时，最后一张卡片顶部的点击会落到热区里。
-              SizedBox(
-                height: math.max(homeHeaderGap, _minTapSize - titleHeight + 1),
-              ),
-            if (loading)
-              SizedBox(
-                height: railHeight,
-                child: const Center(
-                  child: SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: HomePalette.accent,
+            // 按「更多」实际宽度缩窄标题与标签视口；大字号超过 48dp 时
+            // 也不会重叠。按钮独占右列，不会把标题到标签的间距撑大。
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: EdgeInsets.only(left: gutter),
+                    child: HomeSectionHeader(
+                      title: title,
+                      gutter: 0,
+                      topPadding: 8,
+                      bottomPadding: names.length > 1 ? 0 : homeHeaderGap,
                     ),
                   ),
-                ),
-              )
-            else
-              SizedBox(
-                height: railHeight,
-                child: ListView.separated(
-                  key: const Key('classic_home_rank_rail'),
-                  scrollDirection: Axis.horizontal,
-                  padding: EdgeInsets.symmetric(horizontal: gutter),
-                  itemCount: books.length,
-                  separatorBuilder: (_, _) =>
-                      const SizedBox(width: _rankCardGap),
-                  itemBuilder: (context, index) {
-                    final item = books[index];
-                    return _RankCard(
-                      key: ValueKey('rank:${item.kind}:${item.id}'),
-                      item: item,
-                      rank: index + 1,
-                      onTap: () => onOpen(item),
-                    );
-                  },
-                ),
+                  if (names.length > 1)
+                    _BoardNames(
+                      names: names,
+                      selectedIndex: selectedIndex,
+                      onSelect: onSelect,
+                      gutter: gutter,
+                    ),
+                ],
               ),
+            ),
+            Padding(
+              padding: EdgeInsets.only(
+                top: 8,
+                left: _moreGap,
+                right: gutter,
+                // 单榜单没有标签行时，让卡片从按钮热区下方开始。
+                bottom: names.length > 1 ? 0 : 1,
+              ),
+              child: ClassicHomeBlockMore(onTap: onMore),
+            ),
           ],
         ),
+        if (loading)
+          SizedBox(
+            height: railHeight,
+            child: const Center(
+              child: SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: HomePalette.accent,
+                ),
+              ),
+            ),
+          )
+        else
+          SizedBox(
+            height: railHeight,
+            child: ListView.separated(
+              key: const Key('classic_home_rank_rail'),
+              scrollDirection: Axis.horizontal,
+              padding: EdgeInsets.symmetric(horizontal: gutter),
+              itemCount: books.length,
+              separatorBuilder: (_, _) => const SizedBox(width: _rankCardGap),
+              itemBuilder: (context, index) {
+                final item = books[index];
+                return _RankCard(
+                  key: ValueKey('rank:${item.kind}:${item.id}'),
+                  item: item,
+                  rank: index + 1,
+                  onTap: () => onOpen(item),
+                );
+              },
+            ),
+          ),
       ],
     );
   }
@@ -222,20 +211,12 @@ class _BoardNames extends StatelessWidget {
   Widget build(BuildContext context) {
     final palette = HomePalette.of(context);
     // 两端补偿与标签内缩共用同一个 inset：gutter 小于内缩时收窄内缩，
-    // 让首尾文字的左右缘始终落在 gutter 上，而不是被内缩值顶到
+    // 让首尾文字的左右缘始终落在视口的 gutter 上，而不是被内缩值顶到
     // 10dp（那样会与标题错位且没有任何断言失败）。
     final inset = math.min(_boardTextInset, gutter);
     final sidePadding = gutter - inset;
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
-      // 默认 opaque 会让整个视口矩形在命中测试时返回 true，挡住下层
-      // 「更多」：两者纵向重叠 24dp，热区只剩标题行的 23.75dp 可点。
-      // translucent 下空白处返回 false 放行「更多」，标签自己的 InkWell
-      // 仍是 opaque、照常优先；水平拖动也照常进入竞技场，不影响滚动
-      // （translucent 仍会把自身放进命中结果，见 rendering/proxy_box）。
-      // 内容不足一屏时视口 shrink-wrap 到内容宽，右侧空白不在视口内，
-      // 「更多」本来就不受影响。
-      hitTestBehavior: HitTestBehavior.translucent,
       padding: EdgeInsets.symmetric(horizontal: sidePadding),
       child: Row(
         children: [

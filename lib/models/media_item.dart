@@ -393,27 +393,96 @@ class MediaItem {
       bd['type'],
       bd['book_type_name'],
     ]);
-    // Work detail records identify short dramas as genre=203 even without
-    // the video fields that search cards carry.
-    return _matchesGenre(item, 203) ||
-        _matchesGenre(bd, 203) ||
+    final hasVideoPayload = _hasVideoPayload(item) || _hasVideoPayload(bd);
+    final hasVideoId =
         _truthyAny(item, [
           'video_id',
           'vid',
-          'pseries_id',
-          'series_id',
           'video_platform',
           'use_video_model',
         ]) ||
         _truthyAny(bd, [
           'video_id',
           'vid',
-          'pseries_id',
-          'series_id',
           'video_platform',
           'use_video_model',
+        ]);
+    if (hasVideoPayload || hasVideoId) return true;
+    // Genre 4 is an audio book and genre 1/110 is a manga. They must not win
+    // over video only because a recommendation card also carries an adapted
+    // series id. Keep a real video payload as the higher-priority signal above.
+    if (_isAudioItem(item, bd) || _isMangaItem(item, bd)) return false;
+    // Real work-detail records identify short dramas as genre=203 even when
+    // they also carry book-shaped metadata. This must stay ahead of the
+    // book-metadata guard below.
+    if (_matchesGenre(item, 203) || _matchesGenre(bd, 203)) return true;
+
+    final hasSeriesId =
+        _truthyAny(item, ['pseries_id', 'series_id']) ||
+        _truthyAny(bd, ['pseries_id', 'series_id']);
+    // A `series_id` on a book card is often an adaptation identifier, not a
+    // playable video id. Do not treat a card with book metadata as video just
+    // because that field is present.
+    final hasBookMetadata =
+        _truthyAny(item, [
+          'book_id',
+          'book_name',
+          'word_number',
+          'serial_count',
         ]) ||
-        _videoRe.hasMatch(text);
+        _truthyAny(bd, ['book_id', 'book_name', 'word_number', 'serial_count']);
+    if (hasBookMetadata) return false;
+
+    return hasSeriesId || _videoRe.hasMatch(text);
+  }
+
+  static bool _hasVideoPayload(Map<String, dynamic> item) {
+    final videoData = item['video_data'];
+    if (videoData is Map && _hasVideoFields(videoData)) return true;
+    if (videoData is Iterable) {
+      for (final value in videoData) {
+        if (value is Map && _hasVideoFields(value)) return true;
+      }
+    }
+    final videoDetail = item['video_detail'];
+    return videoDetail is Map && _hasVideoFields(videoDetail);
+  }
+
+  /// Whether [value] itself describes a playable video rather than a wrapper
+  /// that merely carries a `video_data` container.
+  ///
+  /// The mixed recommendation feed also returns book cards whose `video_data`
+  /// contains `video_detail.content_type == 0` and a nested `book_data`; those
+  /// are readable books, not streams. A real video card carries a series id,
+  /// a non-zero content type, or a concrete video id.
+  static bool _hasVideoFields(Map<dynamic, dynamic> value) {
+    if (_firstString(Map<String, dynamic>.from(value), [
+          'vid',
+          'video_id',
+          'series_id_str',
+          'series_id',
+          'pseries_id',
+          'first_vid',
+        ]) !=
+        null) {
+      return true;
+    }
+    final contentType = value['content_type'];
+    if (contentType is num && contentType != 0) return true;
+    if (contentType is String &&
+        contentType.trim().isNotEmpty &&
+        contentType.trim() != '0') {
+      return true;
+    }
+    final detail = value['video_detail'];
+    if (detail is Map && _hasVideoFields(detail)) return true;
+    final videos = value['video_list'];
+    if (videos is Iterable) {
+      for (final video in videos) {
+        if (video is Map && _hasVideoFields(video)) return true;
+      }
+    }
+    return false;
   }
 
   // Note: 漫剧的类型证据与视频接口复用，见

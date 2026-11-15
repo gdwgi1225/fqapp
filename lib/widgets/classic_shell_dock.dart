@@ -407,10 +407,6 @@ class _ClassicShellDockState extends State<ClassicShellDock> {
             constraints: const BoxConstraints(maxWidth: _dockMaxWidth),
             child: RepaintBoundary(
               child: Container(
-                // 阴影保留普通圆弧：ShapeDecoration 目前不支持 BoxShadow（Flutter
-                // 已知限制），无法直接用 RoundedSuperellipseBorder。前景与阴影的形状
-                // 不一致在 64 px 高的胶囊上属于 subpixel 级别，肉眼几乎不可辨；日后
-                // ShapeDecoration 支持 BoxShadow 时可将本层一并 squircle 化。
                 decoration: BoxDecoration(
                   borderRadius: borderRadius,
                   boxShadow: eink

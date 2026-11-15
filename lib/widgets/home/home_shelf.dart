@@ -112,9 +112,8 @@ double homeCardExtent(
 /// 旧版的「橙色竖条 + 罗盘图标 + 20sp 副标题」是三件套装饰，去掉了；层级
 /// 由字号和留白承担。`action` 放在同一行右端（榜单的「更多」）。
 ///
-/// 行高只由标题文字决定：`action` 自己不设高度，需要更大点击区的调用方
-/// 用零高占位（如 `SizedBox(width: 48)`）留出水平空间，再把热区浮在
-/// 覆盖层里，否则它会把整行撑到时标题底部空出半屏。
+/// `action` 会参与行高；若它的热区高于标题、且下方紧接标签行，调用方
+/// 应将操作区放在「标题 + 标签」旁边的独立列，保持标题下方的间距。
 class HomeSectionHeader extends StatelessWidget {
   final String title;
   final Widget? action;

@@ -291,8 +291,20 @@ void main() {
       tester,
       episodeCount: 3,
       qualities: const [
-        EpisodeVariant(name: '1080P', url: 'u1080', keyHex: '', height: 1080),
-        EpisodeVariant(name: '360P', url: 'u360', keyHex: '', height: 360),
+        EpisodeVariant(
+          name: '1080P',
+          url: 'u1080',
+          keyHex: '',
+          height: 1080,
+          qualityHeight: 1080,
+        ),
+        EpisodeVariant(
+          name: '360P',
+          url: 'u360',
+          keyHex: '',
+          height: 360,
+          qualityHeight: 360,
+        ),
       ],
     );
 
@@ -325,8 +337,20 @@ void main() {
 
   testWidgets('存的上限不在本剧档位里时，高亮实际会取的那一档', (tester) async {
     const qualities = [
-      EpisodeVariant(name: '1080P', url: 'u1080', keyHex: '', height: 1080),
-      EpisodeVariant(name: '360P', url: 'u360', keyHex: '', height: 360),
+      EpisodeVariant(
+        name: '1080P',
+        url: 'u1080',
+        keyHex: '',
+        height: 1080,
+        qualityHeight: 1080,
+      ),
+      EpisodeVariant(
+        name: '360P',
+        url: 'u360',
+        keyHex: '',
+        height: 360,
+        qualityHeight: 360,
+      ),
     ];
     HomeChip chip(String height) => tester.widget<HomeChip>(
       find.byKey(ValueKey('download-quality-$height')),

@@ -436,9 +436,22 @@ void main() {
         url: 'u1080',
         keyHex: '',
         height: 1080,
+        qualityHeight: 1080,
       ),
-      const EpisodeVariant(name: '720P', url: 'u720', keyHex: '', height: 720),
-      const EpisodeVariant(name: '480P', url: 'u480', keyHex: '', height: 480),
+      const EpisodeVariant(
+        name: '720P',
+        url: 'u720',
+        keyHex: '',
+        height: 720,
+        qualityHeight: 720,
+      ),
+      const EpisodeVariant(
+        name: '480P',
+        url: 'u480',
+        keyHex: '',
+        height: 480,
+        qualityHeight: 480,
+      ),
     ]);
 
     // 不设上限 = 最高档（原来的行为）。
