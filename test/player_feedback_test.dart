@@ -59,6 +59,17 @@ void main() {
       (tester) async {
         final session = _Session(loader: (_) => Future.error(error));
         await _mount(tester, session);
+        if (error is ApiException && (error.statusCode ?? 0) >= 500) {
+          // Service errors stay in the loading state during bounded backoff.
+          // Only exhaust the two retries before checking the final message.
+          expect(find.text(title), findsNothing);
+          expect(session.requests, ['1']);
+          await tester.pump(const Duration(milliseconds: 500));
+          await _flush(tester);
+          expect(session.requests, ['1', '1']);
+          await tester.pump(const Duration(milliseconds: 1500));
+          await _flush(tester);
+        }
         expect(find.text(title), findsOneWidget);
         expect(find.textContaining('private-token'), findsNothing);
         expect(find.textContaining(error.runtimeType.toString()), findsNothing);
