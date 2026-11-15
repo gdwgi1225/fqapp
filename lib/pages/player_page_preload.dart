@@ -30,22 +30,25 @@ extension _PlayerPagePreload on _PlayerPageState {
     });
   }
 
-  /// 当前实际在播的清晰度（像素高度），取不到返回 null。
+  /// 当前实际在播的画质（短边），取不到返回 null。
   ///
-  /// 优先用选档时记下的高度：`variants` 里可能有两条 url 相同、高度不同的
+  /// 优先用选档时记下的质量：`variants` 里可能有两条 url 相同、质量不同的
   /// 别名流，按 url 反查只会拿到第一条，不一定是正在播的那条。没选过档时看
-  /// 播放器解码出来的高度——播的是上游默认流时，它到底绑到哪一档客户端并不
+  /// 播放器解码尺寸的短边——播的是上游默认流时，它到底绑到哪一档客户端并不
   /// 知道，但解码后就有答案了。两者都取不到才退回按 url 认领。
-  int? _playingHeight() {
-    final selected = _renditionHeight;
+  int? _playingQualityHeight() {
+    final selected = _renditionQualityHeight;
     if (selected != null) return selected;
-    final decoded = _player?.videoHeight ?? 0;
-    if (decoded > 0) return decoded;
+    final width = _player?.videoWidth ?? 0;
+    final height = _player?.videoHeight ?? 0;
+    if (width > 0 && height > 0) {
+      return width < height ? width : height;
+    }
     final source = _currentSource;
     if (source == null) return null;
     for (final variant in source.variants) {
       if (variant.url != source.url) continue;
-      return variant.height > 0 ? variant.height : null;
+      return variant.qualityHeight > 0 ? variant.qualityHeight : null;
     }
     return null;
   }
@@ -85,7 +88,7 @@ extension _PlayerPagePreload on _PlayerPageState {
         // 主张挑最高档，只会让流量和空间白涨。
         maxHeight: prefs.downloadHeight.value != 0
             ? prefs.downloadHeight.value
-            : _playingHeight(),
+            : _playingQualityHeight(),
       );
       // 排上了才算这一集处理过：上面每条早退都不算，否则那一集永远没
       // 机会再自动缓存（冷启动 store 未就绪、或在移动网络下起播都会）。
@@ -152,10 +155,10 @@ extension _PlayerPagePreload on _PlayerPageState {
     );
     warm.ready = () async {
       try {
-        final (source, height) = await _episodeSource(next);
+        final (source, qualityHeight) = await _episodeSource(next);
         if (warm.dropped) return false;
         warm.source = source;
-        warm.renditionHeight = height;
+        warm.renditionQualityHeight = qualityHeight;
         await warm.player.create(source.url, source.keyHex);
         return !warm.dropped && warm.player.lastError == null;
       } catch (_) {
@@ -239,7 +242,7 @@ extension _PlayerPagePreload on _PlayerPageState {
 
   /// 本集要播的地址：离线优先（官方 isOfflineVideo 语义），已缓存的集直接
   /// 读本地加密文件，文件被清掉时回退在线。在线时套用会话内记住的画质；
-  /// [avoidVariant] 是刚失败的一档，换到相邻一档。返回地址与选中档位的高度。
+  /// [avoidVariant] 是刚失败的一档，换到相邻一档。返回地址与选中画质。
   Future<(EpisodeSource, int?)> _episodeSource(
     Chapter episode, {
     bool refresh = false,
@@ -254,7 +257,7 @@ extension _PlayerPagePreload on _PlayerPageState {
     final request = _sources.request(episode, refresh: refresh);
     trace?.source = request.origin.name;
     var online = await request.future;
-    int? height;
+    int? qualityHeight;
     // 会话内记住的画质选择（官方=引擎当前档）：按画质名在本集自己
     // 的 variants 里找，找到就用，找不到回默认（#60：换下一集不
     // 应变回默认画质）。记忆由 [QualityMemory] 在 Feed 与播放页
@@ -265,7 +268,9 @@ extension _PlayerPagePreload on _PlayerPageState {
       for (final variant in online.variants) {
         if (variant.name == chosenName) {
           online = online.withVariant(variant);
-          height = variant.height > 0 ? variant.height : null;
+          qualityHeight = variant.qualityHeight > 0
+              ? variant.qualityHeight
+              : null;
           break;
         }
       }
@@ -274,10 +279,12 @@ extension _PlayerPagePreload on _PlayerPageState {
     if (avoidVariant != null) {
       if (fallbackVariant(online.variants, avoidVariant) case final variant?) {
         online = online.withVariant(variant);
-        height = variant.height > 0 ? variant.height : null;
+        qualityHeight = variant.qualityHeight > 0
+            ? variant.qualityHeight
+            : null;
       }
     }
-    return (online, height);
+    return (online, qualityHeight);
   }
 }
 
@@ -287,7 +294,7 @@ class _WarmEpisode {
   final String itemId;
   final NativePlayer player;
   EpisodeSource? source;
-  int? renditionHeight;
+  int? renditionQualityHeight;
 
   /// create 走完：true = 可以接管。
   late final Future<bool> ready;

@@ -10,6 +10,7 @@ import 'package:flutter/foundation.dart';
 import '../models/media_item.dart';
 import '../widgets/player/player_video_layout.dart';
 import 'api_client.dart';
+import 'app_log.dart';
 import 'drama_download_store.dart';
 import 'drama_mute_preferences.dart';
 import 'episode_source_cache.dart';
@@ -290,6 +291,10 @@ class InlineVideoPlayback {
     Duration? startPosition,
   }) async {
     if (_disposed) return;
+    if (!isVideoKind(series.kind)) {
+      AppLog.w('drama-inline', '拒绝为非视频内容启动播放器: ${series.kind}:${series.id}');
+      return;
+    }
     final generation = ++_generation;
     final contentId = series.seriesId ?? series.id;
     final tab = series.kind == 'manju' ? '漫剧' : '短剧';
@@ -1056,6 +1061,7 @@ class InlineVideoPlayback {
   Future<void> _fail(Object failure) async {
     if (_disposed) return;
     ++_generation;
+    AppLog.e('drama', '内联短剧取流或播放失败', error: failure);
     error.value = failure is NativePlaybackException
         ? PlaybackIssue.fromError(failure).title
         : userFacingError(failure);

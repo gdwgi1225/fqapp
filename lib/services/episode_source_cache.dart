@@ -8,13 +8,20 @@ class EpisodeVariant {
   final String name;
   final String url;
   final String keyHex;
+
+  /// Raw decoded height. It is metadata, not the quality tier for portrait
+  /// video (for example, a 720P portrait stream is usually 720x1280).
   final int height;
+
+  /// Quality tier expressed as the decoded short edge. Zero means unknown.
+  final int qualityHeight;
 
   const EpisodeVariant({
     required this.name,
     required this.url,
     required this.keyHex,
     required this.height,
+    this.qualityHeight = 0,
   });
 }
 
@@ -32,15 +39,24 @@ class EpisodeSource {
   /// false 一样当作「不竖屏」，保留「全屏观看」。
   final bool? vertical;
 
+  /// Backend request sequence used to correlate the Rust source trace.
+  final String? sourceTraceId;
+
   const EpisodeSource(
     this.url, [
     this.keyHex = '',
     this.variants = const [],
     this.vertical,
+    this.sourceTraceId,
   ]);
 
-  EpisodeSource withVariant(EpisodeVariant variant) =>
-      EpisodeSource(variant.url, variant.keyHex, variants, vertical);
+  EpisodeSource withVariant(EpisodeVariant variant) => EpisodeSource(
+    variant.url,
+    variant.keyHex,
+    variants,
+    vertical,
+    sourceTraceId,
+  );
 
   factory EpisodeSource.fromResponse(Map<String, dynamic> response) {
     final data = response['data'] is Map
@@ -74,23 +90,59 @@ class EpisodeSource {
             vUri.host.isEmpty) {
           continue;
         }
+        final parsedQuality = int.tryParse('${row['quality_height'] ?? ''}');
         variants.add(
           EpisodeVariant(
             name: name,
             url: vUrl,
             keyHex: key,
             height: int.tryParse('${row['height'] ?? ''}') ?? 0,
+            qualityHeight: parsedQuality != null && parsedQuality > 0
+                ? parsedQuality
+                : 0,
           ),
         );
       }
     }
+    final traceId =
+        '${response['source_trace_id'] ?? data['source_trace_id'] ?? ''}'
+            .trim();
     return EpisodeSource(
       url,
       (data['key_hex'] ?? '').toString().trim(),
       variants,
       _verticalOf(data['vertical'] ?? response['vertical']),
+      traceId.isEmpty ? null : traceId,
     );
   }
+}
+
+final _qualityName = RegExp(r'(4K|2K|\d{3,4}P)', caseSensitive: false);
+
+/// Best-effort recovery for records written before `qualityHeight` existed.
+/// Portrait dimensions and encoded names are safe to map; ambiguous raw
+/// heights remain unknown.
+int? legacyDramaQualityHeight({
+  required int rawHeight,
+  required String variantName,
+}) {
+  final match = _qualityName.firstMatch(variantName.trim());
+  if (match != null) {
+    final token = match.group(1)!.toUpperCase();
+    if (token == '2K') return 1440;
+    if (token == '4K') return 2160;
+    final parsed = int.tryParse(token.substring(0, token.length - 1));
+    if (parsed != null && parsed > 0) return parsed;
+  }
+  return switch (rawHeight) {
+    1920 => 1080,
+    1280 => 720,
+    960 => 540,
+    854 => 480,
+    640 => 360,
+    1080 || 720 || 480 => rawHeight,
+    _ => null,
+  };
 }
 
 /// The rendition to try after [failed] could not start: the next lower one

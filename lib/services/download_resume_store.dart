@@ -7,6 +7,7 @@ import 'package:hive_ce/hive.dart';
 import 'audio_download_store.dart';
 import 'drama_download_store.dart';
 import 'encrypted_hive.dart';
+import 'episode_source_cache.dart';
 import 'secure_key_provider.dart';
 
 enum DownloadKind { audio, drama }
@@ -39,6 +40,7 @@ class DownloadIdentity {
     required this.keyHex,
     required this.rendition,
     required this.height,
+    this.qualityHeight = 0,
     required this.total,
     required this.requestedDigest,
     required this.effectiveDigest,
@@ -48,7 +50,12 @@ class DownloadIdentity {
   final String containerId;
   final String keyHex;
   final String rendition;
+
+  /// Raw decoded height retained as part of the exact stream identity.
   final int height;
+
+  /// Decoded short edge used for the quality tier. Zero means unknown.
+  final int qualityHeight;
   final int total;
   final String? requestedDigest;
   final String? effectiveDigest;
@@ -70,13 +77,18 @@ class DownloadIdentity {
     'keyHex': keyHex,
     'rendition': rendition,
     'height': height,
+    'qualityHeight': qualityHeight,
     'total': total,
     'requestedDigest': requestedDigest,
     'effectiveDigest': effectiveDigest,
     'strongETag': strongETag,
   };
 
-  static DownloadIdentity? fromMap(dynamic raw, {bool discarding = false}) {
+  static DownloadIdentity? fromMap(
+    dynamic raw, {
+    required DownloadKind kind,
+    bool discarding = false,
+  }) {
     if (raw is! Map ||
         raw['containerId'] is! String ||
         (raw['containerId'] as String).isEmpty ||
@@ -85,6 +97,9 @@ class DownloadIdentity {
         raw['rendition'] is! String ||
         raw['height'] is! int ||
         (raw['height'] as int) < 0 ||
+        (raw['qualityHeight'] != null &&
+            (raw['qualityHeight'] is! int ||
+                (raw['qualityHeight'] as int) < 0)) ||
         raw['total'] is! int ||
         (raw['total'] as int) <= 0) {
       return null;
@@ -99,11 +114,20 @@ class DownloadIdentity {
                 strongTag(raw['strongETag'] as String) == null))) {
       return null;
     }
+    final height = raw['height'] as int;
+    final rendition = raw['rendition'] as String;
+    final qualityHeight = raw['qualityHeight'] is int
+        ? raw['qualityHeight'] as int
+        : kind == DownloadKind.drama
+        ? legacyDramaQualityHeight(rawHeight: height, variantName: rendition) ??
+              0
+        : 0;
     return DownloadIdentity(
       containerId: raw['containerId'] as String,
       keyHex: raw['keyHex'] as String,
-      rendition: raw['rendition'] as String,
-      height: raw['height'] as int,
+      rendition: rendition,
+      height: height,
+      qualityHeight: qualityHeight,
       total: raw['total'] as int,
       requestedDigest: raw['requestedDigest'] as String?,
       effectiveDigest: raw['effectiveDigest'] as String?,
@@ -215,6 +239,7 @@ class DownloadResumeEntry {
     if (stage == null || raw['finalOwned'] is! bool) return null;
     final identity = DownloadIdentity.fromMap(
       raw['identity'],
+      kind: key.kind,
       discarding: stage == DownloadResumeStage.discarding,
     );
     final record = DownloadRecord.fromMap(raw['record']);
@@ -257,6 +282,7 @@ class DownloadResumeEntry {
     index: record!.index,
     keyHex: identity!.keyHex,
     height: identity!.height,
+    qualityHeight: identity!.qualityHeight,
     variantName: identity!.rendition,
     bytes: identity!.total,
     filePath: finalPath,
@@ -295,6 +321,7 @@ class DownloadResumeStore {
 
   static final instance = DownloadResumeStore();
   static const _name = 'download_resume_v1';
+  static const _qualityHeightMarker = '__quality_height_v1';
   final HiveInterface? _hive;
   final SecureKeyProvider? keys;
   final Map<String, DownloadResumeEntry> _memoryEntries = {};
@@ -314,10 +341,47 @@ class DownloadResumeStore {
         keys: keys,
         requireEncryption: true,
       );
+      await _migrateQualityHeights(box);
       return action(box);
     });
     _writes = operation.then<void>((_) {}, onError: (Object _) {});
     return operation;
+  }
+
+  Future<void> _migrateQualityHeights(Box<dynamic> box) async {
+    if (box.containsKey(_qualityHeightMarker)) return;
+    final updates = <dynamic, Map<String, dynamic>>{};
+    for (final key in box.keys) {
+      final raw = box.get(key);
+      if (raw is! Map ||
+          raw['version'] != 1 ||
+          raw['kind'] != DownloadKind.drama.name) {
+        continue;
+      }
+      final identity = raw['identity'];
+      if (identity is! Map ||
+          identity['qualityHeight'] is int &&
+              (identity['qualityHeight'] as int) >= 0) {
+        continue;
+      }
+      final height = identity['height'];
+      final rendition = identity['rendition'];
+      if (height is! int || height < 0 || rendition is! String) continue;
+      updates[key] = Map<String, dynamic>.from(raw)
+        ..['identity'] = Map<String, dynamic>.from(identity)
+        ..['identity']['qualityHeight'] =
+            legacyDramaQualityHeight(
+              rawHeight: height,
+              variantName: rendition,
+            ) ??
+            0;
+    }
+    for (final entry in updates.entries) {
+      await box.put(entry.key, entry.value);
+    }
+    if (updates.isNotEmpty) await box.flush();
+    await box.put(_qualityHeightMarker, true);
+    await box.flush();
   }
 
   Future<DownloadResumeEntry?> read(DownloadKey key) {

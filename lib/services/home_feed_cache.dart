@@ -50,6 +50,13 @@ class HomeFeedCache {
   static final HomeFeedCache instance = HomeFeedCache();
   static const _boxName = 'home_feed_cache_v1';
 
+  /// Bumped when a stored card classification is no longer trustworthy.
+  ///
+  /// Older builds could rewrite a book recommendation card to `video`; keeping
+  /// that snapshot would make the player stream a book id before the refreshed
+  /// feed arrives.
+  static const _recordVersion = 2;
+
   /// Snapshots older than this are not restored. The refresh always replaces
   /// them, so the bound only stops a long-absent user from being shown an
   /// ancient feed while the network spins.
@@ -104,6 +111,7 @@ class HomeFeedCache {
       return null;
     }
     if (raw is! Map) return null;
+    if (raw['v'] != _recordVersion) return null;
     final savedAt = raw['savedAt'];
     if (savedAt is! int) return null;
     final age = DateTime.now().millisecondsSinceEpoch - savedAt;
@@ -160,7 +168,7 @@ class HomeFeedCache {
     try {
       final box = await _ensureBox();
       await box.put('$tabIndex', {
-        'v': 1,
+        'v': _recordVersion,
         'savedAt': DateTime.now().millisecondsSinceEpoch,
         'hasMore': hasMore,
         if (lastVid != null && lastVid.isNotEmpty) 'lastVid': lastVid,

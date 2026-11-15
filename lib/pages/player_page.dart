@@ -177,9 +177,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// 待触发的调度是为哪一集排的（同一集反复出首帧不推迟截止时间）。
   int? _autoCacheTimerIndex;
 
-  /// 播放器最近一次**实际选中**的档位高度（按 [QualityMemory] 的名字套用，
+  /// 播放器最近一次**实际选中**的短边质量（按 [QualityMemory] 的名字套用，
   /// 或用户在画质菜单里换档）。null = 没选过档，播的是上游默认流。
-  int? _renditionHeight;
+  int? _renditionQualityHeight;
   int? _prefetchAttemptedGeneration;
 
   /// 还没出画面的这一集失败后，还能静默重来几次（见 [_retrySilently]）。
@@ -1300,12 +1300,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         }
       }
       final EpisodeSource source;
-      int? renditionHeight;
+      int? renditionQualityHeight;
       if (warmSource != null) {
         source = warmSource;
-        renditionHeight = warm!.renditionHeight;
+        renditionQualityHeight = warm!.renditionQualityHeight;
       } else {
-        (source, renditionHeight) = await _episodeSource(
+        (source, renditionQualityHeight) = await _episodeSource(
           episode,
           refresh: refresh,
           avoidVariant: avoidVariant,
@@ -1317,12 +1317,20 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         return;
       }
       _currentSource = source;
+      AppLog.i(
+        'player-quality',
+        'trace=${source.sourceTraceId ?? '-'} attempt=${trace.attempt} '
+            'episode=${trace.episode} source=${trace.source} '
+            'count=${source.variants.length} '
+            'currentMatch=${source.variants.any((v) => v.url == source.url)} '
+            'qualities=[${source.variants.map((v) => '${v.name}:${v.qualityHeight}').join(',')}]',
+      );
       // 取流响应携带的分集方向：目录里没有时由它补上「全屏观看」的判据。
       if (source.vertical case final bool vertical) {
         _episodeVerticals[episode.itemId] = vertical;
       }
-      // 每次装载都重新认领：换集后没选过档就是 null，不留上一集的高度。
-      _renditionHeight = renditionHeight;
+      // 每次装载都重新认领：换集后没选过档就是 null，不留上一集的质量。
+      _renditionQualityHeight = renditionQualityHeight;
       final sourceUri = Uri.tryParse(source.url);
       final isRemote =
           sourceUri != null &&
@@ -1539,7 +1547,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     // 预热的下一集还是旧档位：作废，快播完时按新档位重新预热。
     _dropWarm();
     _currentSource = source.withVariant(variant);
-    _renditionHeight = variant.height > 0 ? variant.height : null;
+    _renditionQualityHeight = variant.qualityHeight > 0
+        ? variant.qualityHeight
+        : null;
     final release = _teardownPlayer();
     NativePlayer? candidate;
     try {

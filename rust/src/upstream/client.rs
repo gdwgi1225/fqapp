@@ -90,6 +90,9 @@ pub struct UpstreamRequest {
     pub headers: Vec<(String, String)>,
     pub no_sign: bool,
     pub pin: Option<PinnedDevice>,
+    /// Playback requests put their `iid` into Argus bean field 16 and must not
+    /// carry the media-specific `x-medusa` header.
+    pub playback_sign: bool,
 }
 
 pub struct UpstreamClient {
@@ -200,14 +203,26 @@ impl UpstreamClient {
             headers.push((k.clone(), v.clone()));
         }
 
+        let query = parsed.query().unwrap_or("");
         if !req.no_sign {
+            let opt = crate::sign::HeaderOpts {
+                install_id_field16: if req.playback_sign {
+                    crate::sign::query_param(query, "iid").unwrap_or_default()
+                } else {
+                    String::new()
+                },
+                ..Default::default()
+            };
             let sig = self
                 .sign
-                .generate_headers(parsed.query().unwrap_or(""), req.body.as_deref());
+                .generate_headers_with_opts(query, req.body.as_deref(), &opt);
             for (k, v) in sig {
                 headers.retain(|(hk, _)| !hk.eq_ignore_ascii_case(&k));
                 headers.push((k, v));
             }
+        }
+        if req.playback_sign {
+            headers.retain(|(k, _)| !k.eq_ignore_ascii_case("x-medusa"));
         }
 
         let resp = self
@@ -236,7 +251,7 @@ impl UpstreamClient {
             })?;
 
         if resp.status != 200 {
-            if is_auth_fail_status(resp.status) {
+            if is_auth_fail_status(resp.status) && !req.no_sign {
                 return Err(ClientError::DeviceFailed(format!("HTTP {}", resp.status)));
             }
             if is_retryable_status(resp.status) {
