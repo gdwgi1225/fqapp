@@ -1,4 +1,4 @@
-"""ASan regression for a callback paused after taking the real Speech pointer."""
+"""ASan regressions for unavailable speech service and in-flight callbacks."""
 import os
 from pathlib import Path
 import shlex
@@ -28,6 +28,14 @@ subprocess.run(["c++", "-std=c++17", "-g", "-O1", "-pthread", "-fsanitize=addres
                 "-I" + str(engine), str(scratch / "probe.cc"), "-L" + str(engine),
                 "-lflutter_linux_gtk", "-Wl,-rpath," + str(engine), *flags,
                 "-o", str(scratch / "probe")], check=True)
+with tempfile.TemporaryDirectory(prefix="fqapp-tts-unavailable-") as runtime:
+    # libspeechd 0.12.1 leaks its internal spawn_report on connect failure.
+    # Keep ASan enabled here and retain leak detection for the lifetime test.
+    subprocess.run(
+        [str(scratch / "probe"), "unavailable"], check=True, timeout=30,
+        env=dict(os.environ, ASAN_OPTIONS="detect_leaks=0:halt_on_error=1",
+                 G_DEBUG="fatal-criticals",
+                 SPEECHD_ADDRESS="unix_socket:" + runtime + "/speechd.sock"))
 subprocess.run([str(scratch / "probe")], check=True, timeout=30,
                env=dict(os.environ, ASAN_OPTIONS="detect_leaks=1:halt_on_error=1",
                         G_DEBUG="fatal-criticals"))
