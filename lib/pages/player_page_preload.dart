@@ -206,7 +206,7 @@ extension _PlayerPagePreload on _PlayerPageState {
   /// 第二次再换一档清晰度。CDN 偶发卡住、某一档流坏掉时，用户只是多等
   /// 一会儿，看不到「播放失败」。已经在播的集中途出错不在这里重来：那时
   /// 续播点还在异步落盘，重建会从旧进度开始。返回 true 表示已接手。
-  bool _retrySilently() {
+  bool _retrySilently({bool backoff = false}) {
     if (_silentRetriesLeft <= 0 ||
         DateTime.now().isAfter(_silentRetryUntil) ||
         _hasDisplayed ||
@@ -216,14 +216,29 @@ extension _PlayerPagePreload on _PlayerPageState {
     }
     final second = _silentRetriesLeft == 1;
     _silentRetriesLeft--;
-    unawaited(
-      _loadVideo(
-        refresh: true,
-        autoplay: _lastAutoplay,
-        silent: true,
-        avoidVariant: second ? _currentVariantName() : null,
-      ),
-    );
+    final generation = _loadGeneration;
+    void retry() {
+      _serviceRetryTimer = null;
+      if (!mounted || generation != _loadGeneration || _switchingSeries) return;
+      unawaited(
+        _loadVideo(
+          refresh: true,
+          autoplay: _lastAutoplay,
+          silent: true,
+          avoidVariant: second ? _currentVariantName() : null,
+        ),
+      );
+    }
+
+    if (backoff) {
+      _serviceRetryTimer?.cancel();
+      _serviceRetryTimer = Timer(
+        Duration(milliseconds: second ? 1500 : 500),
+        retry,
+      );
+    } else {
+      retry();
+    }
     return true;
   }
 

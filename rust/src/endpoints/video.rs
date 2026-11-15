@@ -111,25 +111,22 @@ fn handle_video<'a>(ctx: &'a Ctx, params: &'a Params) -> BoxFuture<'a, ApiResult
         // 两个请求互不依赖，并发发出，不额外占用一个往返。
         let (parsed, phoenix_parsed, resolved) = if stream_mode {
             // Resolve the primary source while quality metadata is loading.
-            // A primary failure cancels the auxiliary work, but auxiliary
-            // failure remains non-fatal and successful tiers are never cut off.
+            // Both endpoints can supply a playable source. Keep the secondary
+            // request alive when the primary fails; validate its codec as usual.
             let primary = async {
                 let parsed = ParsedVideoResponse::parse(
                     &fetch_shortplay_video_model(ctx, &video_id).await?,
                 )?;
                 let resolved = resolve_video_source(ctx, &parsed).await;
-                if resolved == VideoSourceResolution::CodecRejected {
-                    return Err(ApiError::Internal("该视频暂不支持播放".to_string()));
-                }
-                Ok((parsed, resolved))
+                Ok::<_, ApiError>((parsed, resolved))
             };
             let auxiliary = async {
                 let response = fetch_phoenix_video_model(ctx, &video_id)
                     .await
                     .and_then(|raw| ParsedVideoResponse::parse(&raw));
-                Ok::<_, ApiError>(response)
+                response
             };
-            let ((parsed, resolved), phoenix) = tokio::try_join!(primary, auxiliary)?;
+            let (primary, phoenix) = tokio::join!(primary, auxiliary);
             // 凤凰那条失败原先被 `.ok()` 静默吃掉，而 1080P 只可能来自它那条
             // 列表（短剧专用接口自带列表与其 `fallback_api` 都只到 720P）——
             // 失败即面板少一档且毫无痕迹。**HTTP 成功不等于业务成功**：实测
@@ -149,7 +146,24 @@ fn handle_video<'a>(ctx: &'a Ctx, params: &'a Params) -> BoxFuture<'a, ApiResult
                     error.message()
                 ),
             }
-            (parsed, phoenix.ok(), resolved)
+            let phoenix = phoenix.ok();
+            let fallback = if !matches!(&primary, Ok((_, VideoSourceResolution::Found(_, _)))) {
+                if let Some(body) = phoenix.as_ref() {
+                    let source = resolve_video_source(ctx, body).await;
+                    matches!(&source, VideoSourceResolution::Found(_, _)).then_some(source)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            if let Some(source) = fallback {
+                log::warn!("video source: primary unusable, using validated secondary source");
+                (phoenix.expect("validated secondary source"), None, source)
+            } else {
+                let (parsed, resolved) = primary?;
+                (parsed, phoenix, resolved)
+            }
         } else {
             let parsed =
                 ParsedVideoResponse::parse(&fetch_phoenix_video_model(ctx, &video_id).await?)?;

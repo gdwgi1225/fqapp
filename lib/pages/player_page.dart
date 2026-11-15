@@ -334,6 +334,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   int? _danmakuResumeIndex;
   int? _danmakuResumeMs;
 
+  Timer? _serviceRetryTimer;
+
   /// 在飞的弹幕请求取消柄：切集与销毁时作废（官方 `w()` dispose 的等价）。
   BackendRequest? _danmakuFlight;
 
@@ -816,6 +818,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _unregisterFairMemoryFlush = null;
     unawaited(NativePlayer.setKeepScreenOn(false).catchError((Object _) {}));
     unawaited(_stopFloating());
+    _serviceRetryTimer?.cancel();
     _progressTimer?.cancel();
     _prefetchTimer?.cancel();
     _autoCacheTimer?.cancel();
@@ -1241,6 +1244,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     String? avoidVariant,
   }) async {
     if (!mounted || _switchingSeries || widget.eps.isEmpty) return;
+    _serviceRetryTimer?.cancel();
+    _serviceRetryTimer = null;
     _loadTrace?.finish('superseded');
     final generation = ++_loadGeneration;
     final index = _index;
@@ -1483,7 +1488,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       },
     );
     _sources.invalidate(widget.eps[_index].itemId);
-    if (_retrySilently()) return;
+    if (_retrySilently(
+      backoff: error is ApiException && (error.statusCode ?? 0) >= 500,
+    )) {
+      return;
+    }
     _prefetchTimer?.cancel();
     _prefetchTimer = null;
     ++_loadGeneration;

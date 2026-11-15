@@ -342,3 +342,61 @@ async fn stream_variants_do_not_merge_bytevc2_tiers() {
     assert_eq!(names, ["1080P", "360P"], "{body}");
     assert!(!body.to_string().contains(REJECTED_URL), "{body}");
 }
+
+#[tokio::test]
+async fn stream_uses_secondary_when_primary_is_unusable() {
+    for failure in ["http", "empty", "codec"] {
+        let upstream = MockUpstream::start(move |req| {
+            if req.path == "/novel/player/video_model/v1/" {
+                return match failure {
+                    "http" => MockReply::status(500),
+                    "empty" => MockReply::json(json!({"code": 110001, "message": "unavailable"})),
+                    _ => MockReply::json(json!({"data": {"video_model": {"key_seed": "AAAA",
+                        "video_list": {"v1": {"main_url": REJECTED_URL, "codec_type": "bytevc2"}}
+                    }}})),
+                };
+            }
+            MockReply::json(json!({"data": {"video_model": {"key_seed": "AAAA",
+                "video_list": {"v1": {"main_url": ALLOWED_URL, "codec_type": "h264", "spade_a": SPADE_A}}
+            }}}))
+        })
+        .await;
+        let dir = TempDir::new("video-secondary-recovery");
+        let server =
+            build_server(&dir, Some(upstream.origin.clone()), &[], &[], &pool_json(5)).await;
+        let (status, body) = request_video(&server, "mode=stream").await;
+        assert_eq!(status, 200, "{failure}: {body}");
+        assert_eq!(body["video_url"], ALLOWED_URL, "{failure}: {body}");
+        assert_eq!(body["key_hex"], KEY_HEX, "{failure}: {body}");
+        assert!(!body.to_string().contains(REJECTED_URL));
+    }
+}
+
+#[tokio::test]
+async fn stream_primary_success_survives_secondary_failure() {
+    let upstream = MockUpstream::start(|req| {
+        if req.path != "/novel/player/video_model/v1/" {
+            return MockReply::status(500);
+        }
+        MockReply::json(json!({"data": {"video_model": {"key_seed": "AAAA",
+            "video_list": {"v1": {"main_url": ALLOWED_URL, "codec_type": "h264"}}
+        }}}))
+    })
+    .await;
+    let dir = TempDir::new("video-primary-recovery");
+    let server = build_server(&dir, Some(upstream.origin.clone()), &[], &[], &pool_json(5)).await;
+    let (status, body) = request_video(&server, "mode=stream").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["video_url"], ALLOWED_URL);
+}
+
+#[tokio::test]
+async fn stream_both_endpoints_failing_remains_an_error() {
+    let upstream = MockUpstream::start(|_| MockReply::status(500)).await;
+    let dir = TempDir::new("video-both-fail");
+    let server = build_server(&dir, Some(upstream.origin.clone()), &[], &[], &pool_json(5)).await;
+    let (status, body) = request_video(&server, "mode=stream").await;
+    assert_eq!(status, 500, "{body}");
+    assert_eq!(body["success"], false);
+    assert!(body.get("video_url").is_none());
+}
