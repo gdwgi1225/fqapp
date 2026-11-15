@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/media_item.dart';
+import 'episode_source_cache.dart';
 
 /// 「边看边往后缓存」这一轮该排哪几集。
 ///
@@ -32,7 +33,8 @@ class DramaCachePreferences {
 
   static const _aheadKey = 'drama_auto_cache_ahead';
   static const _wifiOnlyKey = 'drama_auto_cache_wifi_only';
-  static const _heightKey = 'drama_download_max_height';
+  static const _qualityHeightKey = 'drama_download_max_quality_height';
+  static const _legacyHeightKey = 'drama_download_max_height';
 
   /// 默认往后缓存 5 集。
   static const int defaultAhead = 5;
@@ -49,7 +51,7 @@ class DramaCachePreferences {
   /// 往后缓存几集；0 = 不自动缓存。
   final ValueNotifier<int> ahead = ValueNotifier<int>(defaultAhead);
 
-  /// 下载画质上限（1080 / 720 / 480），0 = 最高。
+  /// 下载画质上限，以解码短边表示（1080 / 720 / 480），0 = 最高。
   ///
   /// 手动缓存与自动往后缓存共用这一个值 —— 同一个「我最多接受多高」的意图，
   /// 分成两个开关只会让人不知道到底哪次生效。
@@ -71,7 +73,29 @@ class DramaCachePreferences {
       final stored = sp.getInt(_aheadKey);
       ahead.value = stored == null ? defaultAhead : stored.clamp(0, 50);
       wifiOnly.value = sp.getBool(_wifiOnlyKey) ?? true;
-      downloadHeight.value = sp.getInt(_heightKey) ?? 0;
+      final quality = sp.getInt(_qualityHeightKey);
+      if (sp.containsKey(_qualityHeightKey)) {
+        final normalized = quality != null && quality >= 0 ? quality : 0;
+        downloadHeight.value = normalized;
+        if (quality != normalized) {
+          await sp.setInt(_qualityHeightKey, normalized);
+        }
+        if (sp.containsKey(_legacyHeightKey)) {
+          await sp.remove(_legacyHeightKey);
+        }
+      } else {
+        final legacy = sp.getInt(_legacyHeightKey);
+        final hasLegacy = sp.containsKey(_legacyHeightKey);
+        // Unknown legacy values fall back to "highest"; that is an explicit
+        // policy reset, not a fabricated quality tier.
+        final migrated = !hasLegacy || legacy == null
+            ? 0
+            : legacyDramaQualityHeight(rawHeight: legacy, variantName: '') ?? 0;
+        downloadHeight.value = migrated;
+        if (hasLegacy && await sp.setInt(_qualityHeightKey, migrated)) {
+          await sp.remove(_legacyHeightKey);
+        }
+      }
     } catch (_) {
       // 偏好读不出来就用默认值：自动缓存错过的只是便利，不影响播放。
     }
@@ -103,7 +127,7 @@ class DramaCachePreferences {
     downloadHeight.value = value;
     try {
       final sp = await SharedPreferences.getInstance();
-      await sp.setInt(_heightKey, value);
+      await sp.setInt(_qualityHeightKey, value);
     } catch (_) {}
   }
 

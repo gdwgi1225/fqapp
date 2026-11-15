@@ -124,13 +124,19 @@ class DownloadSource {
     required this.keyHex,
     this.rendition = '',
     this.height = 0,
+    this.qualityHeight = 0,
   });
 
   final Uri uri;
   final String containerId;
   final String keyHex;
   final String rendition;
+
+  /// Raw decoded height retained as part of the exact stream identity.
   final int height;
+
+  /// Decoded short edge for drama quality. Audio transfers leave this at 0.
+  final int qualityHeight;
 
   DownloadIdentity identity(int total, Uri effective, String? tag) =>
       DownloadIdentity(
@@ -138,6 +144,7 @@ class DownloadSource {
         keyHex: keyHex,
         rendition: rendition,
         height: height,
+        qualityHeight: qualityHeight,
         total: total,
         requestedDigest: DownloadIdentity.uriDigest(uri),
         effectiveDigest: DownloadIdentity.uriDigest(effective),
@@ -194,6 +201,7 @@ Future<int> transferDownload({
   run.check();
   if (source.containerId.isEmpty ||
       source.height < 0 ||
+      source.qualityHeight < 0 ||
       source.keyHex.length > 128 ||
       DownloadRecord.fromMap(record.toMap()) == null) {
     throw const DownloadTransferFailure('下载来源或记录无效');
@@ -207,6 +215,7 @@ Future<int> transferDownload({
       old.keyHex == source.keyHex &&
       old.rendition == source.rendition &&
       old.height == source.height &&
+      old.qualityHeight == source.qualityHeight &&
       oldLength <= old.total;
   // A part file can survive a process restart before its journal entry was
   // written. In that case there is no identity to verify, but a Range request
