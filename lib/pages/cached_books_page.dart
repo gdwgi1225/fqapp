@@ -23,7 +23,6 @@ import '../models/media_item.dart';
 import '../services/api_client.dart';
 import '../services/book_txt_export.dart';
 import '../services/chapter_cache_store.dart';
-import '../services/chapter_text_formatter.dart';
 import '../services/library_store.dart';
 import '../services/shuqi_reader_source.dart';
 import '../widgets/app_ui/app_ui_scope.dart';
@@ -218,13 +217,9 @@ class _CachedBooksPageState extends State<CachedBooksPage> {
         bookId: book.id,
         chapterId: chapter.itemId,
       );
-      if (cached != null) {
-        final text = ChapterContent.fromCacheText(
-          cached,
-        ).withoutLeadingTitle(chapter.title).legacyText;
-        if (splitChapterParagraphs(text).isNotEmpty) {
-          cachedBody = cached;
-        }
+      if (cached != null &&
+          exportChapterBody(cached, chapterTitle: chapter.title) != null) {
+        cachedBody = cached;
       }
     } catch (_) {
       // Damaged or unavailable cache falls back only to its original source.
