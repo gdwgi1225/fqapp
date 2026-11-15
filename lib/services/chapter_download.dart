@@ -6,6 +6,8 @@ import '../models/media_item.dart';
 import 'chapter_cache_store.dart';
 import 'chapter_text_formatter.dart';
 
+typedef _ChapterPrefetch = ({ChapterContent? content, Object? error});
+
 /// Progress of one chapter batch, in the shape both surfaces render: the
 /// reader's cache panel and the detail page's download action.
 @immutable
@@ -41,6 +43,10 @@ class ChapterDownloadState {
 /// [onContentAvailable] before its own disk write (a failed save still leaves
 /// the downloaded chapter available to an open reader).
 ///
+/// Up to [_maxPrefetchedChapters] chapter bodies are fetched ahead. Publication,
+/// progress and disk writes remain ordered: a later response never overtakes
+/// the chapter before it.
+///
 /// Note: 详情页「下载」直接下全本，批次与面板共用同一实现 — 见
 /// .agents/notes/implemented/feature/2026-09-20-offline-whole-book-download.md
 class ChapterDownload extends ValueNotifier<ChapterDownloadState> {
@@ -55,6 +61,8 @@ class ChapterDownload extends ValueNotifier<ChapterDownloadState> {
   final CachedBook book;
   final Future<String> Function(Chapter chapter) loader;
   final void Function(Chapter chapter, String text)? onContentAvailable;
+
+  static const _maxPrefetchedChapters = 3;
 
   int _job = 0;
   bool _disposed = false;
@@ -81,41 +89,63 @@ class ChapterDownload extends ValueNotifier<ChapterDownloadState> {
     value = ChapterDownloadState(running: true, total: chapters.length);
     try {
       await cache.saveBook(book);
-      for (final chapter in chapters) {
+      if (!_alive(job)) return;
+
+      final prefetched = <Future<_ChapterPrefetch>>[];
+      var nextPrefetch = 0;
+      void fillWindow() {
+        while (nextPrefetch < chapters.length &&
+            prefetched.length < _maxPrefetchedChapters) {
+          prefetched.add(_prefetch(job, chapters[nextPrefetch++]));
+        }
+      }
+
+      fillWindow();
+      for (var index = 0; index < chapters.length; index++) {
         if (!_alive(job)) return;
-        // Earlier writes may evict a chapter that was cached when we started.
+        final chapter = chapters[index];
+        final ahead = await prefetched.removeAt(0);
+        if (!_alive(job)) return;
+        final error = ahead.error;
+        if (error != null) throw error;
+
+        // Earlier writes may have evicted the cache observed by the prefetch.
+        // Re-read at the ordered commit point before publishing anything.
         final cached = await cache.read(
           bookId: book.id,
           chapterId: chapter.itemId,
         );
         if (!_alive(job)) return;
-        var content = _readCachedChapter(cached, chapter.title);
-        var shouldWrite = false;
-        if (content == null || content.needsImageRefresh()) {
-          final text = await loader(
-            chapter,
-          ).timeout(const Duration(seconds: 30));
+        var previous = _readCachedChapter(cached, chapter.title);
+
+        final ChapterContent content;
+        final bool shouldWrite;
+        if (ahead.content != null) {
+          content = ahead.content!.preferCompleteCache(previous);
+          shouldWrite = !identical(content, previous);
+        } else if (previous == null || previous.needsImageRefresh()) {
+          // A prefetched cache hit no longer covers this chapter. Fetch again
+          // instead of restoring the stale snapshot that was evicted.
+          final fetched = await _fetch(chapter);
           if (!_alive(job)) return;
-          final fetched = ChapterContent.isStructuredCache(text)
-              ? ChapterContent.fromCacheText(text)
-              : ChapterContent.fromPlainText(text, illustrationsChecked: false);
-          if (fetched.withoutLeadingTitle(chapter.title).isEmpty) {
-            throw StateError('章节正文为空');
-          }
-          // A reader refresh may have completed while the batch was fetching.
+          // A reader refresh may have completed while this fallback fetched.
           final latest = await cache.read(
             bookId: book.id,
             chapterId: chapter.itemId,
           );
           if (!_alive(job)) return;
-          final previous = _readCachedChapter(latest, chapter.title);
+          previous = _readCachedChapter(latest, chapter.title);
           content = fetched.preferCompleteCache(previous);
           shouldWrite = !identical(content, previous);
+        } else {
+          content = previous;
+          shouldWrite = false;
         }
         final cachedText = content.toCacheText();
         // Publish before queuing the disk write so older reader requests can
         // no longer queue a stale write behind it.
         onContentAvailable?.call(chapter, cachedText);
+        if (!_alive(job)) return;
         if (shouldWrite || pin) {
           await cache.write(
             bookId: book.id,
@@ -134,6 +164,7 @@ class ChapterDownload extends ValueNotifier<ChapterDownloadState> {
           total: chapters.length,
           incompleteImages: incompleteImages,
         );
+        if (_alive(job)) fillWindow();
       }
       if (!_alive(job)) return;
       value = ChapterDownloadState(
@@ -145,13 +176,15 @@ class ChapterDownload extends ValueNotifier<ChapterDownloadState> {
             : '已保存 $completed/${chapters.length} 章，其中 $incompleteImages 章插图未更新，联网后可重试',
       );
     } catch (_) {
-      if (_alive(job)) {
-        value = ChapterDownloadState(
-          completed: completed,
-          total: chapters.length,
-          message: '缓存未完成，已保存 $completed/${chapters.length} 章。检查网络后可重试',
-        );
-      }
+      if (!_alive(job)) return;
+      // Fence already-started prefetches before reporting the ordered failure.
+      // Their futures capture errors, so results no longer consumed are inert.
+      ++_job;
+      value = ChapterDownloadState(
+        completed: completed,
+        total: chapters.length,
+        message: '缓存未完成，已保存 $completed/${chapters.length} 章。检查网络后可重试',
+      );
     }
   }
 
@@ -172,6 +205,38 @@ class ChapterDownload extends ValueNotifier<ChapterDownloadState> {
     _disposed = true;
     ++_job;
     super.dispose();
+  }
+
+  Future<_ChapterPrefetch> _prefetch(int job, Chapter chapter) async {
+    try {
+      if (!_alive(job)) return (content: null, error: null);
+      final cached = await cache.read(
+        bookId: book.id,
+        chapterId: chapter.itemId,
+      );
+      if (!_alive(job)) return (content: null, error: null);
+      final content = _readCachedChapter(cached, chapter.title);
+      if (content != null && !content.needsImageRefresh()) {
+        return (content: null, error: null);
+      }
+      final fetched = await _fetch(chapter);
+      if (!_alive(job)) return (content: null, error: null);
+      return (content: fetched, error: null);
+    } catch (error) {
+      if (!_alive(job)) return (content: null, error: null);
+      return (content: null, error: error);
+    }
+  }
+
+  Future<ChapterContent> _fetch(Chapter chapter) async {
+    final text = await loader(chapter).timeout(const Duration(seconds: 30));
+    final fetched = ChapterContent.isStructuredCache(text)
+        ? ChapterContent.fromCacheText(text)
+        : ChapterContent.fromPlainText(text, illustrationsChecked: false);
+    if (fetched.withoutLeadingTitle(chapter.title).isEmpty) {
+      throw StateError('章节正文为空');
+    }
+    return fetched;
   }
 
   bool _alive(int job) => !_disposed && job == _job;

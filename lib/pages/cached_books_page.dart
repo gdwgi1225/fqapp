@@ -39,7 +39,7 @@ class CachedBooksPage extends StatefulWidget {
   final ChapterCacheStore? cacheStore;
   final ReaderStore? readerStore;
 
-  /// 导出时重取的目录与正文加载器、以及落点；都缺省走实时实现，
+  /// 导出时重取的目录、缓存缺章时的正文加载器与落点；
   /// 注入后测试可完全离线（与详情页的 loader 注入同一套路）。
   final Future<List<Chapter>> Function(String bookId)? exportDirectoryLoader;
   final Future<String> Function(Chapter chapter)? exportChapterLoader;
@@ -205,12 +205,14 @@ class _CachedBooksPageState extends State<CachedBooksPage> {
     return [for (final volume in volumes) ...volume];
   }
 
-  Future<String> _loadShuqiExportChapter(
+  Future<String> _loadExportChapter(
     CachedBook book,
-    String shuqiId,
     Chapter chapter, {
+    String? shuqiId,
     required bool Function() isActive,
   }) async {
+    if (!isActive()) throw StateError('导出已取消');
+    String? cachedBody;
     try {
       final cached = await _store.read(
         bookId: book.id,
@@ -220,7 +222,9 @@ class _CachedBooksPageState extends State<CachedBooksPage> {
         final text = ChapterContent.fromCacheText(
           cached,
         ).withoutLeadingTitle(chapter.title).legacyText;
-        if (text.trim().isNotEmpty) return text;
+        if (splitChapterParagraphs(text).isNotEmpty) {
+          cachedBody = cached;
+        }
       }
     } catch (_) {
       // Damaged or unavailable cache falls back only to its original source.
@@ -228,6 +232,11 @@ class _CachedBooksPageState extends State<CachedBooksPage> {
     // Cache reads may outlive cancellation. Do not start a missing chapter's
     // network request after this export has been cancelled or replaced.
     if (!isActive()) throw StateError('导出已取消');
+    if (cachedBody != null) return cachedBody;
+    if (shuqiId == null) {
+      return (widget.exportChapterLoader ??
+          (chapter) => ApiClient.instance.contentText(chapter.itemId))(chapter);
+    }
     return loadShuqiChapter(
       shuqiId,
       chapter,
@@ -252,18 +261,14 @@ class _CachedBooksPageState extends State<CachedBooksPage> {
               shuqiId,
               loader: widget.exportShuqiTocLoader,
             ),
-      // Both sources keep ApiClient's request funnel. Only Shuqi may reuse
-      // its namespaced cached body; the fresh TOC still covers the whole book.
-      chapterLoader: shuqiId == null
-          ? widget.exportChapterLoader ??
-                (chapter) => ApiClient.instance.contentText(chapter.itemId)
-          : (chapter) => _loadShuqiExportChapter(
-              book,
-              shuqiId,
-              chapter,
-              isActive: () =>
-                  identical(_export, export) && export.value.running,
-            ),
+      // Both sources reuse only their own readable cache; a fresh TOC includes
+      // new chapters, whose requests still pass through ApiClient's funnel.
+      chapterLoader: (chapter) => _loadExportChapter(
+        book,
+        chapter,
+        shuqiId: shuqiId,
+        isActive: () => identical(_export, export) && export.value.running,
+      ),
       sink: widget.exportSink ?? const PlatformTxtSink(),
     );
     export.addListener(_onExportChanged);
