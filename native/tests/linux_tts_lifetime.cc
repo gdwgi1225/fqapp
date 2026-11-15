@@ -102,6 +102,6 @@ int main(int argc, char **) {
   g_object_unref(codec);
   g_object_unref(messenger);
   std::cout << (argc > 1 ? "PASS unavailable service retry under ASan\n"
-                        : "PASS 32 in-flight callback/destructor "
-                          "interleavings under ASan\n");
+                         : "PASS 32 in-flight callback/destructor "
+                           "interleavings under ASan\n");
 }
