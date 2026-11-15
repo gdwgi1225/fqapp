@@ -77,7 +77,7 @@ void main() {
 
   test('翻页沿用首屏游标并把第二页交错追加（跨页去重）', () async {
     final videoPages = <int>[];
-    final audioPages = <int>[];
+    final audioOffsets = <int>[];
     final manjuOffsets = <int>[];
     final mangaOffsets = <int>[];
     final provider = _provider(
@@ -91,21 +91,26 @@ void main() {
                 title: '短剧',
                 items: page == 1
                     ? [_item('v1', kind: 'video')]
+                    : page == 2
                     // 第二页重复 v1：跨页去重必须只保留第一张。
-                    : [_item('v2', kind: 'video'), _item('v1', kind: 'video')],
-              ),
-            ];
-          case '听书':
-            audioPages.add(page);
-            return [
-              SearchTab(
-                title: '听书',
-                items: [_item(page == 1 ? 'a1' : 'a2', kind: 'audio')],
+                    ? [_item('v2', kind: 'video'), _item('v1', kind: 'video')]
+                    : const [],
               ),
             ];
           default:
             return const <SearchTab>[];
         }
+      },
+      audioSearchLoader: ({int offset = 0}) async {
+        audioOffsets.add(offset);
+        return [
+          SearchTab(
+            title: '听书',
+            items: [_item(offset == 0 ? 'a1' : 'a2', kind: 'audio')],
+            hasMore: offset == 0,
+            nextOffset: offset == 0 ? 10 : null,
+          ),
+        ];
       },
       mangaSearchLoader: ({int offset = 0}) async {
         mangaOffsets.add(offset);
@@ -144,10 +149,9 @@ void main() {
 
     await notifier.loadMore();
 
-    // 听书/短剧的搜索页游标来自首屏的 1，翻页要请求第 2 页；漫剧/漫画的
-    // 游标来自首屏返回的 next_offset（17）。
+    // 短剧仍按页码请求第 2 页；听书、漫剧与漫画沿用首屏的 next_offset。
     expect(videoPages, [1, 2]);
-    expect(audioPages, [1, 2]);
+    expect(audioOffsets, [0, 10]);
     expect(manjuOffsets, [0, 17]);
     expect(mangaOffsets, [0, 17]);
     expect(container.read(provider).items.map((item) => item.id), [
@@ -160,6 +164,21 @@ void main() {
       'g2',
       'a2',
     ]);
+
+    await notifier.loadMore();
+    expect(container.read(provider).items.map((item) => item.id), [
+      'v1',
+      'm1',
+      'g1',
+      'a1',
+      'v2',
+      'm2',
+      'g2',
+      'a2',
+    ]);
+    expect(videoPages, [1, 2, 3]);
+    expect(audioOffsets, [0, 10], reason: 'has_more=false 后不得重复拉听书旧页');
+    expect(container.read(provider).hasMore, isFalse);
   });
 
   test('翻页把推荐源放在交错的首位，并用上一页的 offset 续拉', () async {
@@ -407,12 +426,14 @@ void main() {
 NotifierProvider<HomeNotifier, HomeState> _provider({
   required HomepageLoader homepageLoader,
   required SearchTabsLoader searchLoader,
+  CategorySearchLoader? audioSearchLoader,
   required CategorySearchLoader mangaSearchLoader,
   required CategorySearchLoader manjuSearchLoader,
 }) => NotifierProvider<HomeNotifier, HomeState>(
   () => HomeNotifier(
     homepageLoader: homepageLoader,
     searchLoader: searchLoader,
+    audioSearchLoader: audioSearchLoader,
     mangaSearchLoader: mangaSearchLoader,
     manjuSearchLoader: manjuSearchLoader,
   ),

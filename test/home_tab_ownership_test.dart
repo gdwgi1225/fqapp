@@ -27,11 +27,18 @@ void main() {
 
   group('a page answered for another tab is refused', () {
     test('听书首页收到推荐的回答时不画它的区块和书', () async {
+      final audioOffsets = <int>[];
       final provider = NotifierProvider<HomeNotifier, HomeState>(
         () => HomeNotifier(
           usesLocalTabs: true,
           homepageLoader:
               ({int tabType = 2, int offset = 0, String? sessionId}) async {
+                if (tabType == 2) {
+                  return _page(
+                    items: [_item('recommended')],
+                    cells: [_cell(384, '猜你喜欢')],
+                  );
+                }
                 if (tabType != 5) {
                   return _page(items: [], cells: []);
                 }
@@ -50,14 +57,18 @@ void main() {
                   tabScoped: true,
                 );
               },
-          searchLoader: (query, {int page = 1}) async => query == '听书'
-              ? [
-                  SearchTab(
-                    title: '听书',
-                    items: [_item('audio-1', kind: 'audio')],
-                  ),
-                ]
-              : const [],
+          searchLoader: (query, {int page = 1}) async => const [],
+          audioSearchLoader: ({int offset = 0}) async {
+            audioOffsets.add(offset);
+            return [
+              SearchTab(
+                title: '听书',
+                items: [_item('audio-1', kind: 'audio')],
+                hasMore: true,
+                nextOffset: offset + 10,
+              ),
+            ];
+          },
         ),
       );
       final container = ProviderContainer();
@@ -74,6 +85,7 @@ void main() {
         'audio-1',
       ], reason: '别的分类的卡片一张都不能进来，听力页走搜索兜底');
       expect(state.cells, isEmpty, reason: '推荐流的排行榜/猜你喜欢不能画进听书');
+      expect(audioOffsets, [0]);
     });
 
     test('分类表在但没有一项是我们的，同样拒绝', () async {
@@ -103,18 +115,29 @@ void main() {
       notifier.selectTab(audioIndex);
       await _flush();
 
-      expect(container.read(provider).items, isEmpty);
-      expect(container.read(provider).cells, isEmpty);
+      final state = container.read(provider);
+      expect(state.items, isEmpty);
+      expect(state.cells, isEmpty);
+      expect(state.error, isNotNull, reason: 'typed 听书无结果且无可进游标时保留原错误');
     });
 
     test('追加页回答的是别的分类时也不追加', () async {
       var audioPage = 0;
+      final homepageOffsets = <int>[];
+      final audioOffsets = <int>[];
       final provider = NotifierProvider<HomeNotifier, HomeState>(
         () => HomeNotifier(
           usesLocalTabs: true,
           homepageLoader:
               ({int tabType = 2, int offset = 0, String? sessionId}) async {
+                if (tabType == 2) {
+                  return _page(
+                    items: [_item('recommended')],
+                    cells: [_cell(384, '猜你喜欢')],
+                  );
+                }
                 if (tabType != 5) return _page(items: [], cells: []);
+                homepageOffsets.add(offset);
                 audioPage++;
                 if (audioPage == 1) {
                   return _page(
@@ -138,6 +161,19 @@ void main() {
                 );
               },
           searchLoader: (query, {int page = 1}) async => const [],
+          audioSearchLoader: ({int offset = 0}) async {
+            audioOffsets.add(offset);
+            return [
+              SearchTab(
+                title: '听书',
+                items: offset == 0
+                    ? const []
+                    : [_item('audio-search-2', kind: 'audio')],
+                hasMore: offset == 0,
+                nextOffset: offset == 0 ? 10 : null,
+              ),
+            ];
+          },
         ),
       );
       final container = ProviderContainer();
@@ -150,11 +186,19 @@ void main() {
       expect(container.read(provider).items.map((i) => i.id), ['audio-1']);
 
       await notifier.loadMore();
-      final state = container.read(provider);
+      var state = container.read(provider);
       expect(state.items.map((i) => i.id), [
         'audio-1',
       ], reason: '别的分类的下一页不能接在听书后面');
       expect(state.cells.map((c) => c.showType), [337]);
+      expect(state.error, isNull);
+      expect(state.hasMore, isTrue, reason: '空听书页有前进游标时必须继续');
+
+      await notifier.loadMore();
+      state = container.read(provider);
+      expect(state.items.map((i) => i.id), ['audio-1', 'audio-search-2']);
+      expect(homepageOffsets, [0, 12], reason: 'typed 听书兜底成功后不再重复失败的首页游标');
+      expect(audioOffsets, [0, 10]);
     });
   });
 
