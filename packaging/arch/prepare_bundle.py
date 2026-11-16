@@ -1,5 +1,6 @@
 """Check a trusted, locally built bundle; normalize only its staging copy."""
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -27,6 +28,11 @@ for path in bundle.rglob('*'):
     subprocess.run(['patchelf', '--set-rpath', rpath, path], check=True)
     dynamic = subprocess.check_output(['readelf', '-d', path], text=True)
     assert '/tmp/' not in dynamic and '/home/' not in dynamic, dynamic
+    if path == bundle / 'fqapp':
+        needed = re.findall(r'\(NEEDED\).*\[([^\]]+)\]', dynamic)
+        if ('libgcc_s.so.1' not in needed or 'libflutter_linux_gtk.so' not in needed or
+                needed.index('libgcc_s.so.1') > needed.index('libflutter_linux_gtk.so')):
+            raise SystemExit('System unwinder must precede Flutter in DT_NEEDED')
     print(path.relative_to(bundle))
     print('\n'.join(line for line in dynamic.splitlines() if 'NEEDED' in line or 'RUNPATH' in line))
     closure = subprocess.check_output(['ldd', path], text=True)
