@@ -60,6 +60,7 @@ class RequestGate {
           onError: (Object error, StackTrace stack) {
             final retryable =
                 (error is BackendRequestAborted &&
+                    !error.fatal &&
                     (!error.timedOut || timeout != null)) ||
                 (error is TimeoutException && timeout != null);
             if (retryable && request?.isCancelled != true) {
