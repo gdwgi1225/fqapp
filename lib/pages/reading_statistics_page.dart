@@ -134,6 +134,7 @@ class _ReadingStatisticsPageState extends State<ReadingStatisticsPage> {
         badge: '',
         ep: '',
         kind: '${entry['kind'] ?? 'book'}',
+        source: historySource(entry),
         seriesId: entry['seriesId']?.toString(),
         episodeId: entry['episodeId']?.toString(),
       ),

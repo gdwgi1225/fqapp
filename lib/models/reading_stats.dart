@@ -1,4 +1,6 @@
 import '../services/media_history_store.dart';
+import '../services/library_store.dart';
+import 'shuqi_book.dart';
 
 /// Pre-tracking history entries have no measured time; each one counts as a
 /// flat estimate until the book records real reading time.
@@ -115,6 +117,7 @@ Map<String, double> _dayMinutesOf(
   // Fallback estimates for books without real data yet, so older history
   // still shows up during the transition. Drops out once real data exists.
   for (final entry in history) {
+    if (historySource(entry) == shuqiSourceId) continue;
     if (readTime.containsKey(historyStatisticsId(entry))) continue;
     final time = (entry['time'] as num?)?.toInt() ?? 0;
     add(
@@ -146,6 +149,7 @@ List<ReadingRankItem> _rankOf(
     byBook[bookId] = ReadingRankItem(entry: entry, minutes: minutes);
   });
   for (final entry in history) {
+    if (historySource(entry) == shuqiSourceId) continue;
     final id = historyStatisticsId(entry);
     if (readTime.containsKey(id)) continue;
     final existing = byBook[id];

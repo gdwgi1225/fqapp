@@ -19,6 +19,8 @@ import 'package:fqapp/widgets/home/home_back_button.dart';
 import 'package:fqapp/widgets/home/home_media_card.dart';
 import 'package:fqapp/widgets/wenku/wenku_ui.dart';
 
+import 'support/fakes.dart';
+
 /// Classic 书旗 detail and author home (PR #292 task D).
 ///
 /// Both pages keep their current state and loaders; these tests drive the same
@@ -151,7 +153,7 @@ void main() {
       );
     });
 
-    testWidgets('开始阅读 opens the read-only shuqi reader', (tester) async {
+    testWidgets('开始阅读 opens the source-scoped shuqi reader', (tester) async {
       final observer = _RouteObserver();
       final store = await _pumpShuqi(tester, observer: observer);
       addTearDown(store.dispose);
@@ -169,10 +171,13 @@ void main() {
         isNotNull,
         reason: 'the reader must not fall back to the global history store',
       );
-      // 书旗 is read-only: progress/history writes are dropped.
-      await readerStore!.addHistory({'id': 'shuqi:34078', 'kind': 'book'});
-      await readerStore.updateProgress('shuqi:34078', 0, 0.5);
-      expect(await readerStore.historyEntry('shuqi:34078'), isNull);
+      expect(reader.shelfItem!.source, 'shuqi');
+      expect(reader.shelfItem!.id, '34078');
+      await tester.pumpAndSettle();
+      final saved = await readerStore!.historyEntry('shuqi:34078');
+      expect(saved!['source'], 'shuqi');
+      expect(saved['contentId'], '34078');
+      expect(saved['chapterId'], '2180322');
 
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pumpAndSettle();
@@ -406,6 +411,8 @@ Future<AppThemeStyleStore> _pumpShuqi(
           calls?.add('toc:34078');
           return _shuqiToc;
         },
+        readerStore: MemoryReaderStore(),
+        chapterLoader: (chapter) async => '${chapter.title}\n书旗正文。',
       ),
     ),
   );

@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:hive_ce/hive.dart';
 
 import 'package:fqapp/models/media_item.dart';
+import 'package:fqapp/models/shuqi_book.dart';
 import 'package:fqapp/pages/library_page.dart';
 import 'package:fqapp/pages/reader_page.dart';
 import 'package:fqapp/pages/shuqi_detail_page.dart';
@@ -13,7 +14,6 @@ import 'package:fqapp/services/connectivity_status.dart';
 import 'package:fqapp/services/library_store.dart';
 import 'package:fqapp/services/shelf_store.dart';
 import 'package:fqapp/services/shelf_view_store.dart';
-import 'package:fqapp/services/shuqi_reader_source.dart';
 import 'package:fqapp/widgets/shelf/book_collection_tiles.dart';
 
 import 'support/fakes.dart';
@@ -129,7 +129,21 @@ void main() {
       text: '番茄正文',
     );
     final history = _CountingReaderStore()
-      ..entry = {'id': '123', 'kind': 'book', 'chapterId': '99', 'episode': 5};
+      ..entries['123'] = {
+        'id': '123',
+        'kind': 'book',
+        'chapterId': '99',
+        'episode': 5,
+      }
+      ..entries['shuqi:123'] = {
+        'id': 'shuqi:123',
+        'bookId': 'shuqi:123',
+        'contentId': '123',
+        'source': 'shuqi',
+        'kind': 'book',
+        'chapterId': '10',
+        'episode': 0,
+      };
     var directoryCalls = 0;
     await tester.pumpWidget(
       _app(
@@ -153,19 +167,19 @@ void main() {
     expect(reader.startIndex, 0);
     expect(reader.localOnly, isTrue);
     expect(reader.shelfItem!.toJson(), item.toJson());
-    expect(reader.readerStore, isA<ReadOnlyReaderStore>());
+    expect(reader.readerStore, same(history));
     expect(find.byType(ShuqiDetailPage, skipOffstage: false), findsNothing);
     expect(directoryCalls, 0);
-    expect(history.reads, 0);
-    expect(history.writes, 0);
-    expect(history.entry!['chapterId'], '99');
+    expect(history.reads, greaterThan(0));
+    expect(history.entries['123']!['chapterId'], '99');
+    expect(history.entries['shuqi:123']!['source'], shuqiSourceId);
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pumpAndSettle();
-    expect(history.writes, 0, reason: '退出也不能写入书旗历史或时长');
+    expect(history.readSeconds, 0, reason: '书旗进度保存，但仍不计入阅读时长');
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('番茄历史进度不会串到同 id 书旗条目', (tester) async {
+  testWidgets('番茄与书旗历史进度按来源隔离', (tester) async {
     await tester.binding.setSurfaceSize(const Size(400, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.runAsync(() async {
@@ -182,6 +196,18 @@ void main() {
         'progress': 0.5,
         'time': DateTime.now().millisecondsSinceEpoch,
       });
+      await LibraryStore.instance.addHistory({
+        'id': 'shuqi:123',
+        'bookId': 'shuqi:123',
+        'contentId': '123',
+        'source': 'shuqi',
+        'kind': 'book',
+        'title': '书旗书',
+        'episode': 1,
+        'chapterCount': 10,
+        'progress': 0.2,
+        'time': DateTime.now().millisecondsSinceEpoch - 1,
+      });
     });
     await tester.pumpWidget(_app());
     await tester.pumpAndSettle();
@@ -193,8 +219,9 @@ void main() {
       find.byKey(const ValueKey('shelf-book-shuqi/book:123')),
     );
     expect(fanqie.progress, '第5章 · 共10章');
-    expect(shuqi.progress, isNull);
+    expect(shuqi.progress, '第2章 · 共10章');
     expect(find.text('第5章 · 共10章'), findsOneWidget);
+    expect(find.text('第2章 · 共10章'), findsOneWidget);
   });
 
   testWidgets('更新检测只处理番茄书，书旗条目不会出现更新角标', (tester) async {
@@ -311,19 +338,22 @@ Widget _app({
 );
 
 class _CountingReaderStore extends MemoryReaderStore {
+  final Map<String, Map<String, dynamic>> entries = {};
   int reads = 0;
   int writes = 0;
+  double readSeconds = 0;
 
   @override
-  Future<Map<String, dynamic>?> historyEntry(String id) {
+  Future<Map<String, dynamic>?> historyEntry(String id) async {
     reads++;
-    return super.historyEntry(id);
+    final entry = entries[id];
+    return entry == null ? null : Map<String, dynamic>.from(entry);
   }
 
   @override
   Future<void> addHistory(Map<String, dynamic> entry) async {
     writes++;
-    await super.addHistory(entry);
+    entries[entry['id'].toString()] = Map<String, dynamic>.from(entry);
   }
 
   @override
@@ -336,14 +366,15 @@ class _CountingReaderStore extends MemoryReaderStore {
     double? maxScroll,
   }) async {
     writes++;
-    await super.updateProgress(
-      id,
-      episode,
-      progress,
-      chapterId: chapterId,
-      position: position,
-      maxScroll: maxScroll,
-    );
+    entries[id] = {
+      ...?entries[id],
+      'id': id,
+      'episode': episode,
+      'progress': progress,
+      'chapterId': ?chapterId,
+      'position': ?position,
+      'maxScroll': ?maxScroll,
+    };
   }
 
   @override
@@ -354,7 +385,7 @@ class _CountingReaderStore extends MemoryReaderStore {
     DateTime? at,
   }) async {
     writes++;
-    await super.accumulateReadTime(bookId, kind, seconds, at: at);
+    readSeconds += seconds;
   }
 }
 

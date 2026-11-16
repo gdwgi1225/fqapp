@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/media_item.dart';
+import '../models/shelf_identity.dart';
 
 /// 「继续阅读」那一行的关闭状态。
 ///
@@ -14,12 +15,13 @@ class HomeContinuePreferences {
 
   static const _key = 'home_continue_dismissed';
 
-  /// 被关掉的那本书的 `kind:id`；null 表示没关过。
+  /// 被关掉的那本书的来源限定内容键；null 表示没关过。
   final ValueNotifier<String?> dismissedId = ValueNotifier<String?>(null);
 
   bool _loaded = false;
 
-  static String idOf(MediaItem item) => '${item.kind}:${item.id}';
+  static String idOf(MediaItem item) =>
+      ShelfIdentity.contentKeyFor(item.kind, item.id, source: item.source);
 
   bool isDismissed(MediaItem item) => dismissedId.value == idOf(item);
 

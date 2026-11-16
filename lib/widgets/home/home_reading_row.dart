@@ -58,6 +58,7 @@ class ReadingNow {
         badge: '',
         ep: entry['ep']?.toString() ?? '',
         kind: entry['kind']?.toString() ?? 'book',
+        source: historySource(entry),
         seriesId: entry['seriesId']?.toString(),
         episodeId: entry['episodeId']?.toString(),
       ),

@@ -79,14 +79,32 @@ void main() {
       final older = WebDavSyncDocument(
         backup(
           history: [
-            {'id': 'book1', 'kind': 'book', 'chapterId': 'c9', 'time': 100},
+            {'id': '123', 'kind': 'book', 'chapterId': 'c9', 'time': 100},
+            {
+              'id': 'shuqi:123',
+              'bookId': 'shuqi:123',
+              'contentId': '123',
+              'source': 'shuqi',
+              'kind': 'book',
+              'chapterId': 's9',
+              'time': 101,
+            },
           ],
         ),
       );
       final newer = WebDavSyncDocument(
         backup(
           history: [
-            {'id': 'book1', 'kind': 'book', 'chapterId': 'c2', 'time': 200},
+            {'id': '123', 'kind': 'book', 'chapterId': 'c2', 'time': 200},
+            {
+              'id': 'shuqi:123',
+              'bookId': 'shuqi:123',
+              'contentId': '123',
+              'source': 'shuqi',
+              'kind': 'book',
+              'chapterId': 's2',
+              'time': 201,
+            },
             {'id': 'book2', 'kind': 'audio', 'position': 38.5, 'time': 201},
           ],
         ),
@@ -95,11 +113,17 @@ void main() {
         final decoded = WebDavSyncDocument.decode(merged.encode());
         expect(
           decoded.backup.history.firstWhere(
-            (e) => e['id'] == 'book1',
+            (e) => e['id'] == '123' && e['source'] != 'shuqi',
           )['chapterId'],
           'c2',
         );
-        expect(decoded.backup.history, hasLength(2));
+        expect(
+          decoded.backup.history.firstWhere(
+            (e) => e['id'] == '123' && e['source'] == 'shuqi',
+          )['chapterId'],
+          's2',
+        );
+        expect(decoded.backup.history, hasLength(3));
       }
     },
   );
@@ -694,6 +718,15 @@ void main() {
               {'id': 'one', 'kind': 'book', 'time': 1},
               {'id': 'two', 'kind': 'audio', 'time': 2},
               {'id': 'keep', 'kind': 'book', 'time': 3},
+              {'id': '123', 'kind': 'book', 'time': 4},
+              {
+                'id': 'shuqi:123',
+                'bookId': 'shuqi:123',
+                'contentId': '123',
+                'source': 'shuqi',
+                'kind': 'book',
+                'time': 5,
+              },
             ],
           ),
         ).encode();
@@ -701,16 +734,23 @@ void main() {
         await service.sync();
         await LibraryStore.instance.removeHistoryEntry('one', 'book');
         await LibraryStore.instance.removeHistoryEntries([
-          (contentId: 'two', kind: 'audio'),
+          (contentId: 'two', kind: 'audio', source: 'fanqie'),
+          (contentId: '123', kind: 'book', source: 'shuqi'),
         ]);
         await service.sync();
-        expect(
-          WebDavSyncDocument.decode(remote!).backup.history.single['id'],
-          'keep',
+        final remaining = WebDavSyncDocument.decode(remote!).backup.history;
+        expect(remaining, hasLength(2));
+        expect(remaining.map((entry) => entry['id']).toSet(), {'keep', '123'});
+        final remainingFanqie = remaining.singleWhere(
+          (entry) => entry['id'] == '123',
         );
+        expect(remainingFanqie['source'], isNull);
+        expect(remainingFanqie['time'], 4);
         await service.sync();
         expect(await LibraryStore.instance.historyEntry('one'), isNull);
         expect(await LibraryStore.instance.historyEntry('audio:two'), isNull);
+        expect(await LibraryStore.instance.historyEntry('shuqi:123'), isNull);
+        expect((await LibraryStore.instance.historyEntry('123'))?['id'], '123');
       },
     );
 
