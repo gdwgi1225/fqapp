@@ -1,6 +1,6 @@
 // 经典首页 tab 条滚动回归：移植自 PiliPlus（Material TabBar isScrollable +
 // TabAlignment.center）的「选中即居中滚进视野」与「不足一屏整组居中」。
-// 测试字体为 Ahem（每字宽 = 字号），六分类均为两字，几何可精确断言：
+// 测试字体为 Ahem（每字宽 = 字号），七分类均为两字，几何可精确断言：
 // 选中样式 17 → 单标签宽 34 + 2×6 padding = 46。
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -43,7 +43,7 @@ void main() {
       .controller!;
 
   testWidgets('选中屏外标签时自动居中滚进视野', (tester) async {
-    // 200 宽 < 自然总宽 348 → 溢出 148，可滚动。
+    // 200 宽 < 自然总宽 402 → 溢出 202，可滚动。
     const size = Size(200, 600);
     await tester.binding.setSurfaceSize(size);
     addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -54,7 +54,7 @@ void main() {
     expect(controller.offset, 0);
     expect(
       controller.position.maxScrollExtent,
-      moreOrLessEquals(148, epsilon: 0.5),
+      moreOrLessEquals(202, epsilon: 0.5),
     );
 
     // 切到第 4 项（index 3）：中心 = 16 + 3×(46+8) + 23 = 201，
@@ -121,7 +121,7 @@ void main() {
   });
 
   testWidgets('标签不足一屏时整组居中且不滚动', (tester) async {
-    // 800 宽：间距被撑到上限 8+12=20，自然总宽 408 < 800 → 整组居中。
+    // 800 宽：间距被撑到上限 8+12=20，自然总宽 442 < 800 → 整组居中。
     const size = Size(800, 600);
     await tester.binding.setSurfaceSize(size);
     addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -132,19 +132,19 @@ void main() {
     expect(controller.offset, 0);
     expect(controller.position.maxScrollExtent, 0);
 
-    // 首项左 = 16 + (768 − 376)/2 = 212，末项右 = 212 + 376 = 588，
+    // 首项左 = (800 − 442)/2 = 179，末项右 = 179 + 442 = 621，
     // 组中心 = 400 = 视口中心。
     final first = tester.getRect(find.byKey(const ValueKey('home_category_0')));
-    final last = tester.getRect(find.byKey(const ValueKey('home_category_5')));
-    expect(first.left, moreOrLessEquals(212, epsilon: 1));
-    expect(last.right, moreOrLessEquals(588, epsilon: 1));
+    final last = tester.getRect(find.byKey(const ValueKey('home_category_6')));
+    expect(first.left, moreOrLessEquals(179, epsilon: 1));
+    expect(last.right, moreOrLessEquals(621, epsilon: 1));
     expect((first.left + last.right) / 2, moreOrLessEquals(400, epsilon: 1));
     // 单项宽仍是预留的 46。
     expect(first.width, moreOrLessEquals(itemWidth, epsilon: 0.5));
   });
 
   testWidgets('切换标签时下划线在标签中心之间滑动', (tester) async {
-    // 800 宽整组居中：标签间距被撑到上限 20，自然总宽 348，rowLeft = 226。
+    // 800 宽整组居中：标签间距被撑到上限 20，rowLeft = 179。
     const size = Size(800, 600);
     await tester.binding.setSurfaceSize(size);
     addTearDown(() => tester.binding.setSurfaceSize(null));

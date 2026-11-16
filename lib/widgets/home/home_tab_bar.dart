@@ -17,9 +17,10 @@ const homeCategories = [
   HomeCategory('漫剧'),
   HomeCategory('漫画'),
   HomeCategory('听书'),
+  HomeCategory('短篇'),
 ];
 
-/// 六个媒介分类固定在顶部；保留名称和下划线，不再重复分区的编号层级。
+/// 七个媒介分类固定在顶部；保留名称和下划线，不再重复分区的编号层级。
 class HomeTabBar extends StatelessWidget {
   static const double sidePadding = 16;
   static const double tabSpacing = 22;

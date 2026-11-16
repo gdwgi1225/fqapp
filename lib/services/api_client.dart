@@ -27,6 +27,7 @@ import '../models/reader_video_match.dart';
 import '../models/category_front.dart';
 import '../models/search_discovery.dart';
 import '../models/series_detail.dart';
+import '../models/ugc_story.dart';
 import 'app_log.dart';
 import 'api_response_decoder.dart';
 import 'backend_service.dart';
@@ -36,6 +37,7 @@ import 'request_gate.dart';
 
 export '../models/homepage_page.dart';
 part 'reader_video_api.dart';
+part 'ugc_story_api.dart';
 
 /// API client talking to the local Rust core.
 ///

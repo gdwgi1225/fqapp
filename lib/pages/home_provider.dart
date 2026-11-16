@@ -304,13 +304,14 @@ const int _maxFilteredVideoPages = 3;
 /// and feed before the first await, so switching tabs can never redirect a
 /// late response into a different tab's cache.
 class HomeNotifier extends Notifier<HomeState> {
-  static const tabs = ['全部', '小说', '短剧', '漫剧', '漫画', '听书', '视频'];
+  static const tabs = ['全部', '小说', '短剧', '漫剧', '漫画', '听书', '短篇', '视频'];
   static const tabKinds = {
     '小说': 'book',
     '短剧': 'video',
     '漫剧': 'manju',
     '漫画': 'manga',
     '听书': 'audio',
+    '短篇': 'ugc',
     // The 短剧 tab's 推荐 channel. `BookstoreTabType.video_feed = 16`; the
     // bookstore strip happens to label 16 「视频」, while the seriesmall tab
     // shows the same feed under 「推荐」 (用户截图与 ap3.xml 的兜底名都如此).
@@ -321,7 +322,7 @@ class HomeNotifier extends Notifier<HomeState> {
   /// 服务端 `tab_type`（官方 `BookstoreTabType`）→ 卡片种类。
   ///
   /// 服务端下发的 `data.tab_item` 有 11 项（推荐/小说/经典/知识/听书/看剧/
-  /// 视频/短篇/漫画/新书/商城），与本地 7 项兜底表既不同长也不同序。若用本地
+  /// 视频/短篇/漫画/新书/商城），与本地分类表既不同长也不同序。若用本地
   /// 表按服务端下标取名字，点「经典」（服务端下标 2）会去拉 `tab_type=8`
   /// （短剧）——串台。所以索引落在服务端表内时，种类与 `tab_type` 都从那一项
   /// 自己的类型推。
@@ -545,6 +546,8 @@ class HomeNotifier extends Notifier<HomeState> {
   /// `Se` → `sf(listOf(cache))` + `Te` → `uf` append).
   Future<void> load({bool manualRefresh = false}) async {
     final tabIndex = state.tabIndex;
+    // The independent UGC provider owns short-story data and pagination.
+    if (identityOf(tabIndex).kind == 'ugc') return;
     FrameStats.mark('load start tab=$tabIndex');
     final generation = ++_generation;
     final feed = _feedFor(tabIndex)..reset();
@@ -667,7 +670,7 @@ class HomeNotifier extends Notifier<HomeState> {
   /// even on a cache hit, which invalidates requests started by the old tab.
   void selectTab(int index) {
     // 上限跟着下标口径走：走服务端表时是它下发的分类数（首页 11 个），走本地
-    // 表时是本地那 7 个。用错口径会把短剧页的「短剧」（本地下标 2）拦掉或
+    // 表时是本地表的长度。用错口径会把短剧页的「短剧」（本地下标 2）拦掉或
     // 放进越界下标。
     final limit = usesLocalTabs || state.tabs.isEmpty
         ? tabs.length
@@ -692,9 +695,14 @@ class HomeNotifier extends Notifier<HomeState> {
       tabs: state.tabs,
       isLoading: false,
       isLoadMore: false,
-      hasMore: cached?.hasMore ?? true,
+      hasMore: identityOf(index).kind == 'ugc'
+          ? false
+          : cached?.hasMore ?? true,
       clearError: true,
     );
+    if (identityOf(index).kind == 'ugc') {
+      return;
+    }
     // 只有「还什么都没有、且没成功落地过」才在进入时重拉。
     //
     // 旧判据 `!cached.loaded` 有个陷阱：快速连滑会取消上一路的请求，
@@ -717,6 +725,7 @@ class HomeNotifier extends Notifier<HomeState> {
 
   /// Appends the next page to the selected feed.
   Future<void> loadMore() async {
+    if (identityOf(state.tabIndex).kind == 'ugc') return;
     if (state.isLoading || state.isLoadMore || !state.hasMore) return;
     final tabIndex = state.tabIndex;
     final generation = _generation;
@@ -776,6 +785,7 @@ class HomeNotifier extends Notifier<HomeState> {
   /// 必须先把游标恢复，否则 [loadMore] 会以「没有下一页」直接返回，按钮成了
   /// 摆设。
   Future<void> retryLoadMore() async {
+    if (identityOf(state.tabIndex).kind == 'ugc') return;
     if (state.isLoading || state.isLoadMore) return;
     _feedFor(state.tabIndex).hasMore = true;
     state = state.copyWith(hasMore: true, clearError: true);
@@ -1514,10 +1524,7 @@ class HomeNotifier extends Notifier<HomeState> {
 }
 
 final homeProvider = NotifierProvider<HomeNotifier, HomeState>(
-  // 2026-10-24 用户决定：首页顶栏回到本地六分类（推荐/小说/短剧/漫剧/
-  // 漫画/听书），不用服务端下发的 11 项——服务端表里没有「短剧/漫剧」，
-  // 过滤不出这套组合，所以身份口径整条走本地表（同 dramaProvider 的
-  // usesLocalTabs 机制）。
+  // 首页使用本地分类，包含独立短篇流；服务端分类表没有对应的短剧/漫剧组合。
   () => HomeNotifier(usesLocalTabs: true),
 );
 
