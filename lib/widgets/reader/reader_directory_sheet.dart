@@ -3,7 +3,8 @@
 //                                   control, current/cached row labels)
 //
 // fqapp keeps its own sheet route, debounced filtering, reversed projection,
-// itemExtent and fast-scroll handle. Available Chapter.volumeName metadata now
+// fixed row extents (volume headers keep a shorter stride) and fast-scroll
+// handle. Available Chapter.volumeName metadata now
 // drives the upstream volume headers/collapse; a single unlabelled group stays
 // flat. Display rows retain the original chapter indices in either order.
 //
@@ -72,6 +73,7 @@ class _ReaderDirectorySheetState extends State<ReaderDirectorySheet> {
   late List<int> _indexes;
   late final Map<String, AiChapterCheckStatus> _aiStatuses;
   double _itemExtent = 60;
+  double _volumeExtent = 48;
   int _scrollRevision = 0;
   bool _reversed = false;
   bool _searchOpen = false;
@@ -149,6 +151,7 @@ class _ReaderDirectorySheetState extends State<ReaderDirectorySheet> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     final scaler = MediaQuery.textScalerOf(context);
+    final classic = AppUiScope.isClassic(context);
     // Keep one maximum extent for direct index/offset fast scrolling. Only
     // the current row can stack progress, but variable extents would invalidate
     // those offsets. Measure the same styles/line limits the rows actually use.
@@ -191,16 +194,47 @@ class _ReaderDirectorySheetState extends State<ReaderDirectorySheet> {
                   2 +
               2 +
               12
-        : AppUiScope.isClassic(context)
+        : classic
         ? scaler.scale(11) * 1.15 * 2 + 12
         : 0.0;
     final extent = math.max(60.0, math.max(titleBudget, markerBudget));
-    if (_itemExtent != extent) {
-      final position = _scrollController.hasClients
-          ? (_scrollController.offset / _itemExtent).floor()
-          : null;
+    // Volume headers carry their own, tighter stride instead of borrowing the
+    // chapter height: the embedded header closes with the same 0.5dp rule as
+    // the chapter rows, so the first group no longer opens with a blank band.
+    final volumeLabel = _measureEmbeddedText(
+      context,
+      '卷名',
+      TextStyle(
+        fontSize: 14,
+        fontWeight: widget.embedded
+            ? FontWeight.w400
+            : classic
+            ? FontWeight.w600
+            : FontWeight.w700,
+      ),
+    ).height;
+    final volumeExtent = widget.embedded
+        ? math.max(48.0, volumeLabel + 16)
+        : classic
+        ? math.max(52.0, volumeLabel + 20)
+        : math.max(48.0, volumeLabel + 18);
+    if (_itemExtent != extent || _volumeExtent != volumeExtent) {
+      // Keep the same row and its residual offset: the new strides are only
+      // known after the fields below change, so re-anchor the saved remainder.
+      int? row;
+      double? residual;
+      if (_scrollController.hasClients) {
+        final before = _scrollController.offset;
+        row = _rowIndexAt(before);
+        residual = before - _rowOffset(row);
+      }
       _itemExtent = extent;
-      _schedulePosition(current: position == null, position: position);
+      _volumeExtent = volumeExtent;
+      _schedulePosition(
+        current: row == null,
+        position: row,
+        residual: residual,
+      );
     }
   }
 
@@ -266,7 +300,11 @@ class _ReaderDirectorySheetState extends State<ReaderDirectorySheet> {
     }
   }
 
-  void _schedulePosition({bool current = false, int? position}) {
+  void _schedulePosition({
+    bool current = false,
+    int? position,
+    double? residual,
+  }) {
     final revision = ++_scrollRevision;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted ||
@@ -280,14 +318,41 @@ class _ReaderDirectorySheetState extends State<ReaderDirectorySheet> {
           (current
               ? _rows.indexWhere((row) => row.chapter == widget.currentIndex)
               : 0);
+      final anchored = math.max(0, index);
       final offset =
-          math.max(0, index) * _itemExtent +
-          (current ? 8 : 0) -
+          _rowOffset(anchored) +
+          (current ? 8 : 0) +
+          (residual ?? 0) -
           (current
               ? math.max(0, (scroll.viewportDimension - _itemExtent) / 2)
               : 0);
       _scrollController.jumpTo(offset.clamp(0.0, scroll.maxScrollExtent));
     });
+  }
+
+  /// Height of one [_rows] entry; only volume headers differ from the chapter
+  /// stride (see [_volumeExtent]).
+  double _rowExtent(int index) =>
+      _rows[index].chapter == null ? _volumeExtent : _itemExtent;
+
+  /// Pixel offset of [index], mirroring the list's prefix sums.
+  double _rowOffset(int index) {
+    var offset = 0.0;
+    for (var row = 0; row < index && row < _rows.length; row++) {
+      offset += _rowExtent(row);
+    }
+    return offset;
+  }
+
+  /// Row index under a scroll [offset]; the inverse of [_rowOffset].
+  int _rowIndexAt(double offset) {
+    var start = 0.0;
+    for (var row = 0; row < _rows.length; row++) {
+      final end = start + _rowExtent(row);
+      if (offset < end) return row;
+      start = end;
+    }
+    return math.max(0, _rows.length - 1);
   }
 
   List<int> get _visibleIndexes {
@@ -384,7 +449,7 @@ class _ReaderDirectorySheetState extends State<ReaderDirectorySheet> {
                       padding: classic
                           ? const EdgeInsets.symmetric(vertical: 8)
                           : const EdgeInsets.fromLTRB(10, 4, 10, 12),
-                      itemExtent: _itemExtent,
+                      itemExtentBuilder: (position, _) => _rowExtent(position),
                       itemCount: _rows.length,
                       itemBuilder: (context, position) =>
                           switch (_rows[position].chapter) {
@@ -633,26 +698,67 @@ class _ReaderDirectorySheetState extends State<ReaderDirectorySheet> {
   Widget _classicVolumeRow(String name, ReaderThemePreset preset) {
     final expanded = _query.isNotEmpty || _expandedVolumes.contains(name);
     if (widget.embedded) {
-      return ListTile(
-        key: ValueKey('reader-volume-$name'),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16),
-        title: Text(
-          name,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: TextStyle(fontSize: 14, color: preset.mutedTextColor),
+      // The header owns its own, shorter extent now (see didChangeDependencies)
+      // and closes with the same 0.5dp rule as the chapter rows, so the first
+      // volume no longer opens the list with a blank band above it.
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: DecoratedBox(
+          key: ValueKey('reader-volume-rule-$name'),
+          decoration: BoxDecoration(
+            border: Border(
+              bottom: BorderSide(color: preset.borderColor, width: .5),
+            ),
+          ),
+          child: Semantics(
+            expanded: expanded,
+            child: Material(
+              type: MaterialType.transparency,
+              child: InkWell(
+                key: ValueKey('reader-volume-$name'),
+                onTap: _query.isNotEmpty
+                    ? null
+                    : () => setState(() {
+                        if (!_expandedVolumes.add(name)) {
+                          _expandedVolumes.remove(name);
+                        }
+                        _rebuildRows();
+                      }),
+                child: Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: preset.mutedTextColor,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Icon(
+                            expanded
+                                ? LucideIcons.chevron_down
+                                : LucideIcons.chevron_right,
+                            size: 16,
+                            color: preset.mutedTextColor,
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
         ),
-        trailing: Icon(
-          expanded ? LucideIcons.chevron_down : LucideIcons.chevron_right,
-          size: 16,
-          color: preset.mutedTextColor,
-        ),
-        onTap: _query.isNotEmpty
-            ? null
-            : () => setState(() {
-                if (!_expandedVolumes.add(name)) _expandedVolumes.remove(name);
-                _rebuildRows();
-              }),
       );
     }
     final count = widget.chapters
@@ -662,12 +768,15 @@ class _ReaderDirectorySheetState extends State<ReaderDirectorySheet> {
       expanded: expanded,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+        // The header owns its own extent now; the whole slot stays tappable and
+        // the filled bar keeps its 40dp minimum anchored to the slot bottom,
+        // so any spare height reads as separation above the group instead of a
+        // gap between the volume header and its first chapter.
         child: Material(
-          borderRadius: BorderRadius.circular(8),
-          clipBehavior: Clip.antiAlias,
-          color: preset.fieldColor,
+          type: MaterialType.transparency,
           child: InkWell(
             key: ValueKey('reader-volume-$name'),
+            borderRadius: BorderRadius.circular(8),
             onTap: _query.isNotEmpty
                 ? null
                 : () => setState(() {
@@ -676,41 +785,60 @@ class _ReaderDirectorySheetState extends State<ReaderDirectorySheet> {
                     }
                     _rebuildRows();
                   }),
-            child: SizedBox(
-              height: math.max(0.0, _itemExtent - 4),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                          color: preset.textColor,
+            child: Align(
+              alignment: Alignment.bottomCenter,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(minHeight: 40),
+                // Ink instead of a plain DecoratedBox: the fill has to live in
+                // the Material ink layer, otherwise it paints over the
+                // InkWell splash and the header loses its press feedback.
+                child: Ink(
+                  key: ValueKey('reader-volume-fill-$name'),
+                  decoration: BoxDecoration(
+                    color: preset.fieldColor,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                  color: preset.textColor,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Text(
+                              '$count 章',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: preset.mutedTextColor,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Icon(
+                              expanded
+                                  ? LucideIcons.chevron_down
+                                  : LucideIcons.chevron_right,
+                              size: 16,
+                              color: preset.mutedTextColor,
+                            ),
+                          ],
                         ),
-                      ),
+                      ],
                     ),
-                    const SizedBox(width: 10),
-                    Text(
-                      '$count 章',
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: preset.mutedTextColor,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Icon(
-                      expanded
-                          ? LucideIcons.chevron_down
-                          : LucideIcons.chevron_right,
-                      size: 16,
-                      color: preset.mutedTextColor,
-                    ),
-                  ],
+                  ),
                 ),
               ),
             ),
@@ -1131,33 +1259,44 @@ class _ReaderDirectorySheetState extends State<ReaderDirectorySheet> {
                 if (!_expandedVolumes.add(name)) _expandedVolumes.remove(name);
                 _rebuildRows();
               }),
+        // The row keeps its own (shorter) extent; bottom-aligning the header
+        // contents moves the spare height above the group instead of leaving a
+        // gap between the volume header and its first chapter.
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
-          child: Row(
+          padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              Expanded(
-                child: Text(
-                  name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w700,
-                    color: preset.textColor,
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: preset.textColor,
+                      ),
+                    ),
                   ),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Text(
-                '$count 章',
-                style: TextStyle(fontSize: 11, color: preset.mutedTextColor),
-              ),
-              const SizedBox(width: 10),
-              Icon(
-                expanded
-                    ? CupertinoIcons.chevron_down
-                    : CupertinoIcons.chevron_right,
-                size: 12,
+                  const SizedBox(width: 10),
+                  Text(
+                    '$count 章',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: preset.mutedTextColor,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Icon(
+                    expanded
+                        ? CupertinoIcons.chevron_down
+                        : CupertinoIcons.chevron_right,
+                    size: 12,
+                  ),
+                ],
               ),
             ],
           ),
