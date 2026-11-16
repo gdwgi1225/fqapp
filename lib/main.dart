@@ -92,10 +92,7 @@ Future<void> main() async {
     //
     // 但这条 I/O 走平台通道，不能无上限地挡住 runApp：超时就用默认值启动，
     // `_loadLocalData` 后面还会再读一次并纠正。
-    await primeAppearance().timeout(
-      const Duration(milliseconds: 300),
-      onTimeout: () {},
-    );
+    await primeWithBudget(const Duration(milliseconds: 300));
     runApp(const ProviderScope(child: FqApp()));
   }, (error, stack) => AppLog.e('zone', '未捕获异步异常', error: error, stack: stack));
 }

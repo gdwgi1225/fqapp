@@ -31,3 +31,16 @@ Future<void> primeAppearance({AppThemeStyleStore? styleStore}) async {
     // 读不到就沿用初值，行为与预热前一致。
   }
 }
+
+/// 带等待上限的预热：`runApp` 不能为了等偏好而被平台通道无限期挡住。
+///
+/// 超时就按默认值启动；预热本身继续在后台跑完（幂等，读到的值与整包本地
+/// 数据一致，晚到也不会打架）。抽成独立函数是为了能单测这条超时路径。
+Future<void> primeWithBudget(
+  Duration budget, {
+  AppThemeStyleStore? styleStore,
+}) async {
+  await primeAppearance(
+    styleStore: styleStore,
+  ).timeout(budget, onTimeout: () {});
+}
