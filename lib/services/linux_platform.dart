@@ -102,21 +102,41 @@ class LinuxPlatform with WindowListener {
       } catch (_) {
         // A failed bootstrap still permits closing the error screen.
       }
+      AppLog.d('exit', '[DEBUG-close-20261116] beforeClose begin');
       await beforeClose?.call();
+      AppLog.d(
+        'exit',
+        '[DEBUG-close-20261116] beforeClose complete; media begin',
+      );
       await DesktopPlatform.instance.disposeMedia();
+      AppLog.d('exit', '[DEBUG-close-20261116] media complete; TTS begin');
       await const MethodChannel(
         'fqapp/system_tts',
       ).invokeMethod<void>('shutdown');
+      AppLog.d('exit', '[DEBUG-close-20261116] TTS complete; foreground begin');
       await const MethodChannel(
         'fqapp/native_player',
       ).invokeMethod<void>('stopListenForeground');
+      AppLog.d(
+        'exit',
+        '[DEBUG-close-20261116] foreground complete; awake begin',
+      );
       await const MethodChannel(
         'fqapp/desktop_session',
       ).invokeMethod<void>('setKeepScreenOn', {'on': false});
+      AppLog.d('exit', '[DEBUG-close-20261116] awake complete; events begin');
       await _sessionEvents?.cancel();
       _sessionEvents = null;
+      AppLog.d('exit', '[DEBUG-close-20261116] events complete; destroy begin');
       await windowManager.destroy();
-    } catch (_) {
+      AppLog.d('exit', '[DEBUG-close-20261116] destroy complete');
+    } catch (error, stack) {
+      AppLog.e(
+        'exit',
+        '[DEBUG-close-20261116] close failed',
+        error: error,
+        stack: stack,
+      );
       _closing = false;
       rethrow;
     }

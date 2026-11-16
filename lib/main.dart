@@ -129,7 +129,9 @@ Future<void> _prepareRuntime() async {
           } catch (error, stack) {
             AppLog.w('exit', '退出前停止后端失败', error: error, stack: stack);
           }
+          AppLog.d('exit', '[DEBUG-close-20261116] Hive close begin');
           await Hive.close();
+          AppLog.d('exit', '[DEBUG-close-20261116] Hive close complete');
         };
   }
 }
