@@ -655,29 +655,42 @@ class ApiClient {
   /// `genre` and `tone_id` are mandatory for a usable answer: the backend
   /// defaults (`genre=4`, `tone_id=99`) always return `1301008 no available
   /// speech text`, while a real tone id with `genre=1` returns the track. A
-  /// book without generated speech text yields [SubtitleTrack.empty].
+  /// book without generated speech text yields [SubtitleTrack.empty]. Transport
+  /// and decode failures propagate so the caller can retry and distinguish
+  /// temporary unavailability from a complete answer.
   Future<SubtitleTrack> chapterTimeline(
     String itemId, {
     String toneId = '1',
     int genre = 1,
+    Future<void>? cancel,
+    Duration? timeout,
   }) async {
+    final request = BackendRequest();
+    if (cancel != null) {
+      unawaited(cancel.then((_) => request.cancel()));
+    }
     try {
-      final response = await _get(
-        _url('/api/v1/chapters/${Uri.encodeComponent(itemId)}/timeline', {
-          'genre': '$genre',
-          'tone_id': toneId,
-        }),
-      );
-      final status = response.statusCode;
-      final bytes = response.bodyBytes;
-      return await Isolate.run(() {
-        final payload = _decodeEnvelope(status, bytes);
-        // "No speech text" is a normal, expected answer, not a failure.
-        if (isUnavailableCode(payload['code'])) return SubtitleTrack.empty;
-        return SubtitleTrack.fromPayload(payload);
+      return await withCancellation(request, () async {
+        final response = await _get(
+          _url('/api/v1/chapters/${Uri.encodeComponent(itemId)}/timeline', {
+            'genre': '$genre',
+            'tone_id': toneId,
+          }),
+          timeout: timeout,
+        );
+        final status = response.statusCode;
+        final bytes = response.bodyBytes;
+        return decodeResponseBody(bytes.length, () {
+          final payload = _decodeEnvelope(status, bytes);
+          // Only an explicit "no speech text" answer means the optional track
+          // does not exist. Transport/decode failures stay visible to the
+          // controller, which owns retrying.
+          return _parseSubtitleTrackPayload(payload);
+        });
       });
-    } on Exception {
-      return SubtitleTrack.empty;
+    } on BackendRequestAborted catch (error) {
+      if (error.timedOut) throw TimeoutException(error.message);
+      rethrow;
     }
   }
 
@@ -691,28 +704,58 @@ class ApiClient {
   /// `101049`，2 回 `101002`，4 虽然 `code:0` 但偏移全为 0。
   ///
   /// 真人讲书用 2 取音频时间轴；这一版上游对部分书直接拒绝（`101002
-  /// NOVEL_DATA_GET_ERROR`）或给空轨。失败的那一章随即改用 3 再取一次，并
-  /// 记住回落结果：同一章之后直接取 3，不反复试错。
+  /// NOVEL_DATA_GET_ERROR`）、给空轨，或只有音频坐标而没有原著章节映射。
+  /// 这些章节随即改用 3 再取一次，并
+  /// 记住回落结果：同一章之后直接取 3，不反复试错。超时、HTTP 失败或解码
+  /// 错误不属于“2 不支持”，会原样抛给调用方且不污染回落缓存。
   Future<AudioTimeTrack> chapterTimePoints(
     String bookId,
     String itemId, {
     String toneId = '0',
     int reqType = 3,
+    Future<void>? cancel,
+    Duration? timeout,
   }) async {
-    if (reqType != 2) {
-      return _chapterTimePoints(bookId, itemId, toneId, reqType);
+    final request = BackendRequest();
+    if (cancel != null) {
+      unawaited(cancel.then((_) => request.cancel()));
     }
-    final fallbackKey = '$itemId|$toneId';
-    if (_timePointFallbacks.contains(fallbackKey)) {
-      return _chapterTimePoints(bookId, itemId, toneId, 3);
+    try {
+      return await withCancellation(request, () async {
+        if (reqType != 2) {
+          return _chapterTimePoints(bookId, itemId, toneId, reqType, timeout);
+        }
+        final fallbackKey = '$bookId|$itemId|$toneId';
+        if (_timePointFallbacks.contains(fallbackKey)) {
+          return _chapterTimePoints(bookId, itemId, toneId, 3, timeout);
+        }
+        try {
+          final direct = await _chapterTimePoints(
+            bookId,
+            itemId,
+            toneId,
+            2,
+            timeout,
+          );
+          // A flat audio timeline without a novel chapter alias cannot drive
+          // listen-along. Type 3 supplies the audio-to-novel mapping.
+          if (direct.isNotEmpty && direct.novelItemId.isNotEmpty) return direct;
+        } on ApiException catch (error) {
+          // req_type=2's known unsupported response is deterministic. A
+          // timeout, HTTP 429/5xx, decode failure or cancellation must not be
+          // remembered as "type 2 unsupported".
+          if (error.statusCode != null || error.upstreamCode != 101002) rethrow;
+        }
+        _timePointFallbacks.add(fallbackKey);
+        return _chapterTimePoints(bookId, itemId, toneId, 3, timeout);
+      });
+    } on BackendRequestAborted catch (error) {
+      if (error.timedOut) throw TimeoutException(error.message);
+      rethrow;
     }
-    final direct = await _chapterTimePoints(bookId, itemId, toneId, 2);
-    if (direct.isNotEmpty) return direct;
-    _timePointFallbacks.add(fallbackKey);
-    return _chapterTimePoints(bookId, itemId, toneId, 3);
   }
 
-  /// 已经回落到 `req_type=3` 的章节（`itemId|toneId`）。只在内存里记，
+  /// 已经回落到 `req_type=3` 的章节（`bookId|itemId|toneId`）。只在内存里记，
   /// 进程重启后重新探测一次没有代价。
   final Set<String> _timePointFallbacks = {};
 
@@ -721,25 +764,22 @@ class ApiClient {
     String itemId,
     String toneId,
     int reqType,
+    Duration? timeout,
   ) async {
-    try {
-      final response = await _get(
-        _url('/api/v1/chapters/${Uri.encodeComponent(itemId)}/timepoints', {
-          'book_id': bookId,
-          'tone_id': toneId,
-          'req_type': '$reqType',
-        }),
-      );
-      final status = response.statusCode;
-      final bytes = response.bodyBytes;
-      return await Isolate.run(() {
-        final payload = _decodeEnvelope(status, bytes);
-        if (isUnavailableCode(payload['code'])) return AudioTimeTrack.empty;
-        return AudioTimeTrack.fromPayload(payload, audioItemId: itemId);
-      });
-    } on Exception {
-      return AudioTimeTrack.empty;
-    }
+    final response = await _get(
+      _url('/api/v1/chapters/${Uri.encodeComponent(itemId)}/timepoints', {
+        'book_id': bookId,
+        'tone_id': toneId,
+        'req_type': '$reqType',
+      }),
+      timeout: timeout,
+    );
+    final status = response.statusCode;
+    final bytes = response.bodyBytes;
+    return decodeResponseBody(bytes.length, () {
+      final payload = _decodeEnvelope(status, bytes);
+      return _parseAudioTimeTrackPayload(payload, audioItemId: itemId);
+    });
   }
 
   /// Chapter ideas (段评 / 章评): per-paragraph counts and comment ids.
@@ -1750,15 +1790,104 @@ Map<String, dynamic> _decodeEnvelope(int statusCode, List<int> bodyBytes) {
       payload['code'] != 0 &&
       !isUnavailableCode(payload['code']) &&
       !isUnavailableIdeaCode(payload['code'])) {
+    final code = payload['code'];
     throw ApiException(
       '${payload['message'] ?? '请求失败'}',
-      upstreamCode: payload['code'] is int ? payload['code'] as int : null,
+      upstreamCode: code is int ? code : int.tryParse('$code'),
     );
   }
   if (payload['success'] == false) {
     throw ApiException('${payload['error'] ?? payload['message'] ?? '请求失败'}');
   }
   return payload;
+}
+
+SubtitleTrack _parseSubtitleTrackPayload(Map<String, dynamic> payload) {
+  if (isUnavailableCode(payload['code'])) return SubtitleTrack.empty;
+
+  dynamic data;
+  if (payload.containsKey('data')) {
+    data = payload['data'];
+    if (data is Map && data['data'] is Map) data = data['data'];
+  } else if (payload.containsKey('speech_text')) {
+    // A few speech-text bridges return the data object without a wrapper.
+    data = payload;
+  } else {
+    throw const FormatException('字幕轨响应缺少 data');
+  }
+  if (data == null) return SubtitleTrack.empty;
+  if (data is! Map) throw const FormatException('字幕轨 data 类型错误');
+  if (!data.containsKey('speech_text')) return SubtitleTrack.empty;
+
+  final speechText = data['speech_text'];
+  if (speechText == null) return SubtitleTrack.empty;
+  if (speechText is! String) {
+    throw const FormatException('字幕轨 speech_text 类型错误');
+  }
+  final track = SubtitleTrack.parse(speechText);
+  if (speechText.trim().isNotEmpty && track.isEmpty) {
+    throw const FormatException('字幕轨 speech_text 无法解析');
+  }
+  return track;
+}
+
+AudioTimeTrack _parseAudioTimeTrackPayload(
+  Map<String, dynamic> payload, {
+  required String audioItemId,
+}) {
+  if (isUnavailableCode(payload['code'])) return AudioTimeTrack.empty;
+  if (!payload.containsKey('para_match_data') && !payload.containsKey('data')) {
+    throw const FormatException('时间轴响应缺少 data');
+  }
+  final match = payload['para_match_data'] ?? payload['data'];
+  if (match == null) return AudioTimeTrack.empty;
+  if (match is! Map) throw const FormatException('时间轴 data 类型错误');
+
+  final byAudio = match['audio_para_match_data'];
+  if (byAudio != null && byAudio is! Map) {
+    throw const FormatException('audio_para_match_data 类型错误');
+  }
+
+  final hasFlatPoints =
+      match.containsKey('time_points') || match.containsKey('timePoints');
+  final flatPoints = match['time_points'] ?? match['timePoints'];
+  if (flatPoints != null && flatPoints is! List) {
+    throw const FormatException('time_points 类型错误');
+  }
+
+  final track = AudioTimeTrack.fromPayload(payload, audioItemId: audioItemId);
+  if (track.isNotEmpty) return track;
+
+  if (byAudio is Map && byAudio.isNotEmpty) {
+    final key = byAudio.containsKey(audioItemId)
+        ? audioItemId
+        : '${byAudio.keys.first}';
+    final points = byAudio[key];
+    if (points == null || (points is List && points.isEmpty)) {
+      return AudioTimeTrack.empty;
+    }
+    if (points is! List) {
+      throw const FormatException('audio_para_match_data 分片类型错误');
+    }
+    throw const FormatException('时间轴 points 无法解析');
+  }
+
+  if (hasFlatPoints) {
+    if (flatPoints == null || (flatPoints is List && flatPoints.isEmpty)) {
+      return AudioTimeTrack.empty;
+    }
+    throw const FormatException('时间轴 time_points 无法解析');
+  }
+
+  const emptyKeys = {
+    'audio_para_match_data',
+    'item_ids',
+    'text_para_match_data',
+  };
+  if (match.keys.every(emptyKeys.contains)) {
+    return AudioTimeTrack.empty;
+  }
+  throw const FormatException('时间轴响应缺少可识别字段');
 }
 
 String _extractChapterText(Map<String, dynamic> payload) {

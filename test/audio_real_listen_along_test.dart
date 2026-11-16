@@ -29,6 +29,11 @@ const _audioBook = '7239243941252598845';
 const _novelBook = '7180279419959774247';
 const _audioChapter = '7250158428088454201';
 const _novelChapter = '7181453438667096588';
+const _novelChapterTitle = '第1章 末世之后，我重生了';
+const _nextNovelChapter = '7181453641277473284';
+const _nextNovelChapterTitle = '第2章 白莲花';
+const _lastNovelChapter = '7181453768402305593';
+const _lastNovelChapterTitle = '第3章 购物囤货';
 
 const _timeTrack = AudioTimeTrack(
   [
@@ -43,6 +48,41 @@ const _timeTrack = AudioTimeTrack(
   textItemId: _novelChapter,
   novelItemId: _novelChapter,
   novelChapterTitle: '第1章 下山那天',
+);
+
+const _crossChapterTimeTrack = AudioTimeTrack(
+  [
+    AudioSyncPoint(
+      startTime: 0,
+      startPara: 98,
+      startParaOff: 0,
+      endPara: 98,
+      endParaOff: 33,
+      itemTitle: _novelChapterTitle,
+      novelItemId: _novelChapter,
+    ),
+    AudioSyncPoint(
+      startTime: 13530,
+      startPara: 7,
+      startParaOff: 0,
+      endPara: 7,
+      endParaOff: 47,
+      itemTitle: _nextNovelChapterTitle,
+      novelItemId: _nextNovelChapter,
+    ),
+    AudioSyncPoint(
+      startTime: 414210,
+      startPara: 3,
+      startParaOff: 0,
+      endPara: 3,
+      endParaOff: 25,
+      itemTitle: _lastNovelChapterTitle,
+      novelItemId: _lastNovelChapter,
+    ),
+  ],
+  textItemId: _novelChapter,
+  novelItemId: _novelChapter,
+  novelChapterTitle: _novelChapterTitle,
 );
 
 /// 时间点齐全但没有原著章节 id：卡片保留为禁用状态。
@@ -135,7 +175,7 @@ void main() {
   testWidgets('the card opens the novel reader on the mapped chapter', (
     tester,
   ) async {
-    final session = _ListenAlongSession();
+    final session = _ListenAlongSession(timeTrack: _crossChapterTimeTrack);
     await _mount(tester, session);
 
     // 控制器的会话别名已经带上原著 id，阅读页才能继续匹配播放状态。
@@ -143,6 +183,19 @@ void main() {
     expect(ListeningSession.instance.matchesChapter(_novelChapter), isTrue);
 
     final card = find.byKey(const Key('audio_real_read_along'));
+    expect(find.text(_novelChapterTitle), findsOneWidget);
+
+    // 同一条音频时间轴跨进原著第 2 章后，ReadAlong 卡片和会话别名都要跟着
+    // 当前播放位置切换；一次成功发布不能重新打开用户手动关闭的跟随。
+    ListeningSession.instance.setFollowArmed(false);
+    session.players.single.emitPosition(const Duration(milliseconds: 13530));
+    await _flush(tester);
+    expect(ListeningSession.instance.matchesChapter(_novelChapter), isFalse);
+    expect(ListeningSession.instance.matchesChapter(_nextNovelChapter), isTrue);
+    expect(ListeningSession.instance.readerChapterId, _nextNovelChapter);
+    expect(ListeningSession.instance.followArmed, isFalse);
+    expect(find.text(_nextNovelChapterTitle), findsOneWidget);
+
     await tester.ensureVisible(card);
     await tester.tap(card);
     await tester.pump();
@@ -154,9 +207,9 @@ void main() {
     final reader = tester.widget<ReaderPage>(find.byType(ReaderPage));
     expect(reader.bookId, _novelBook);
     expect(reader.title, '原著小说');
-    expect(reader.chapters, hasLength(3));
-    expect(reader.startIndex, 1);
-    expect(reader.chapters[reader.startIndex].itemId, _novelChapter);
+    expect(reader.chapters, hasLength(4));
+    expect(reader.startIndex, 2);
+    expect(reader.chapters[reader.startIndex].itemId, _nextNovelChapter);
   });
 
   test('the session matches both the audio and the novel identity', () {
@@ -254,13 +307,22 @@ Future<void> _mount(
 
 List<Chapter> _novelChapters() => [
   Chapter(itemId: 'novel-0', title: '序章', volumeName: ''),
-  Chapter(itemId: _novelChapter, title: '第1章 下山那天', volumeName: ''),
-  Chapter(itemId: 'novel-2', title: '第2章 练剑', volumeName: ''),
+  Chapter(itemId: _novelChapter, title: _novelChapterTitle, volumeName: ''),
+  Chapter(
+    itemId: _nextNovelChapter,
+    title: _nextNovelChapterTitle,
+    volumeName: '',
+  ),
+  Chapter(
+    itemId: _lastNovelChapter,
+    title: _lastNovelChapterTitle,
+    volumeName: '',
+  ),
 ];
 
 ChapterContent _chapterContent() => ChapterContent(
   blocks: const [
-    ChapterParagraph('第1章 下山那天', paraIndex: 0),
+    ChapterParagraph(_novelChapterTitle, paraIndex: 0),
     ChapterParagraph('山门外的雾还没散，师姐打了个哈欠。', paraIndex: 1),
   ],
 );

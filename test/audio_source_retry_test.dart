@@ -91,6 +91,7 @@ void main() {
 
   testWidgets('a 5xx audio source is retried and then plays', (tester) async {
     var attempts = 0;
+    var timePointAttempts = 0;
     _sourceResponse = (_) async {
       attempts++;
       if (attempts == 1) {
@@ -100,16 +101,39 @@ void main() {
     };
 
     final players = <ControlledNativePlayer>[];
-    await _mount(tester, players: players);
+    await _mount(
+      tester,
+      players: players,
+      timePointLoader: (_, _) async {
+        timePointAttempts++;
+        if (timePointAttempts == 1) {
+          throw const ApiException('temporary', statusCode: 503);
+        }
+        return const AudioTimeTrack([
+          AudioSyncPoint(
+            startTime: 0,
+            startPara: 0,
+            startParaOff: 0,
+            endPara: 0,
+            endParaOff: 1,
+          ),
+        ], novelItemId: 'novel-1');
+      },
+    );
     await _pumpUntil(
       tester,
-      () => players.isNotEmpty && players.single.isPlaying,
+      () =>
+          players.isNotEmpty &&
+          players.single.isPlaying &&
+          ListeningSession.instance.novelChapterId == 'novel-1',
       settleMs: 700,
     );
 
     expect(_sourceRequests, hasLength(2), reason: '5xx 值得再取一次');
     expect(players, isNotEmpty);
     expect(players.single.isPlaying, isTrue);
+    expect(timePointAttempts, 2, reason: '可选时间轴同样有限重试');
+    expect(ListeningSession.instance.novelChapterId, 'novel-1');
   });
 }
 
@@ -132,7 +156,10 @@ Map<String, dynamic> _playinfoPayload() => {
   ],
 };
 
-Widget _app(List<ControlledNativePlayer> players) => MaterialApp(
+Widget _app(
+  List<ControlledNativePlayer> players, {
+  TimePointLoader? timePointLoader,
+}) => MaterialApp(
   home: AudioPage(
     bookId: 'book',
     title: '测试听书',
@@ -141,7 +168,7 @@ Widget _app(List<ControlledNativePlayer> players) => MaterialApp(
     voicesLoader: () async => const [AudioVoice(id: '1', label: '音色一')],
     extrasLoader: (_) async => const AudioExtras(),
     subtitleLoader: (_, _) async => SubtitleTrack.empty,
-    timePointLoader: (_, _) async => AudioTimeTrack.empty,
+    timePointLoader: timePointLoader ?? (_, _) async => AudioTimeTrack.empty,
     excerptLoader: (_) async => null,
     directoryLoader: (_) async => const [],
     playerFactory: () {
@@ -155,6 +182,7 @@ Widget _app(List<ControlledNativePlayer> players) => MaterialApp(
 Future<void> _mount(
   WidgetTester tester, {
   List<ControlledNativePlayer>? players,
+  TimePointLoader? timePointLoader,
 }) async {
   await tester.binding.setSurfaceSize(const Size(430, 932));
   addTearDown(() async {
@@ -162,7 +190,9 @@ Future<void> _mount(
     await _flush(tester);
     await tester.binding.setSurfaceSize(null);
   });
-  await tester.pumpWidget(_app(players ?? []));
+  await tester.pumpWidget(
+    _app(players ?? [], timePointLoader: timePointLoader),
+  );
   await _flush(tester);
 }
 

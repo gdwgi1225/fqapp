@@ -24,6 +24,7 @@ import '../services/audio_playback_choice.dart';
 import '../services/audio_subtitle_synth.dart';
 import '../services/audio_time_point_lookup.dart';
 import '../services/audio_preferences.dart';
+import '../services/backend_transport.dart';
 import '../services/book_updates.dart';
 import '../services/chapter_cache_store.dart';
 import '../services/chapter_text_formatter.dart';

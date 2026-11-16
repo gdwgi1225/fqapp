@@ -202,8 +202,9 @@ extension _AudioPlaybackQueries on _AudioPlaybackController {
 /// 也不该在播放链路上发网络请求。
 Future<SubtitleTrack?> _synthesizeSubtitles(
   _AudioPlaybackController c,
-  String itemId,
-) async {
+  String itemId, {
+  required int generation,
+}) async {
   if (c.request.sourceLoader != null ||
       c.request.playerFactory != null ||
       c._offline) {
@@ -217,7 +218,7 @@ Future<SubtitleTrack?> _synthesizeSubtitles(
   } catch (_) {
     return null;
   }
-  if (text.trim().isEmpty) return null;
+  if (text.trim().isEmpty || !c._current(generation)) return null;
   return SubtitleSynthesis.buildAsync(
     text: text,
     duration: duration,
