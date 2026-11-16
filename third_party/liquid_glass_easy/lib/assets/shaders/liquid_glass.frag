@@ -264,7 +264,7 @@ float computeShapeMask(float shapeDistPx) {
 // =====================================================
 // Main entry
 // =====================================================
-void main() {
+vec4 renderLiquidGlass() {
     // ===============================
     // Fragment coordinate setup
     // ===============================
@@ -300,8 +300,7 @@ void main() {
         - vec2(u_lensWidth, u_lensHeight) * 0.5)
         - vec2(u_lensWidth, u_lensHeight) * 0.5;
     if (any(greaterThan(outputDistance, vec2(outputGuard)))) {
-        frag_color = vec4(0.0);
-        return;
+        return vec4(0.0);
     }
 
     float invResY = 1.0 / u_resolution.y;
@@ -411,7 +410,7 @@ void main() {
         );
     }
     vec3 preTintCol;
-    frag_color = finalSample(samplePx, shapeMask, 0.0, xformed, preTintCol);
+    return finalSample(samplePx, shapeMask, 0.0, xformed, preTintCol);
 #elif defined(LIQUID_GLASS_DESKTOP)
     // Outside the band: the straight magnified sample, no dispersion. One sample and
     // one border call serve both sides, so each is compiled once.
@@ -464,7 +463,7 @@ void main() {
     // ===============================
     // Output composite
     // ===============================
-    frag_color = overlayPremul(base, borderPremul);
+    return overlayPremul(base, borderPremul);
 #else
     if (zoneMask < 0.5) {
         // Outside distortion zone
@@ -484,8 +483,7 @@ void main() {
             u_shapeAaPx
         );
 
-        frag_color = overlayPremul(base, borderPremul);
-        return;
+        return overlayPremul(base, borderPremul);
     }
 
     // ===============================
@@ -529,6 +527,11 @@ void main() {
     // ===============================
     // Output composite
     // ===============================
-    frag_color = overlayPremul(base, borderPremul);
+    return overlayPremul(base, borderPremul);
 #endif
+    return vec4(0.0);
+}
+
+void main() {
+    frag_color = renderLiquidGlass();
 }

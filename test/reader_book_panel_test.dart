@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:ui' show SemanticsAction, Tristate;
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
@@ -29,6 +30,7 @@ import 'package:fqapp/widgets/reader/reader_book_notes.dart';
 import 'package:fqapp/widgets/reader/reader_book_panel.dart';
 import 'package:fqapp/widgets/reader/reader_directory_sheet.dart';
 import 'package:fqapp/widgets/reader/reader_paged_view.dart';
+import 'package:fqapp/widgets/reader/reader_theme.dart';
 
 import 'support/app_ui_host.dart';
 import 'support/fakes.dart';
@@ -114,6 +116,8 @@ class _PanelFixture {
     double currentProgress = .426,
     AiChapterCheckState aiState = AiChapterCheckState.checked,
     ReaderThemePreset preset = ReaderThemePreset.light,
+    Brightness appBrightness = Brightness.light,
+    MediaItem? book,
   }) async {
     style = AppThemeStyleStore();
     await style.select(AppThemeStyle.classic);
@@ -125,7 +129,7 @@ class _PanelFixture {
     await tester.pumpWidget(
       MaterialApp(
         theme: AppTheme.createTheme(
-          Brightness.light,
+          appBrightness,
           style: AppThemeStyle.classic,
         ),
         builder: (context, child) => AppUiScope(
@@ -160,7 +164,7 @@ class _PanelFixture {
                       child: FractionallySizedBox(
                         heightFactor: .92,
                         child: ReaderBookPanel(
-                          book: _book,
+                          book: book ?? _book,
                           preset: preset,
                           loadDetail: () {
                             detailLoads++;
@@ -463,7 +467,11 @@ void main() {
             expect(rect.bottom, lessThanOrEqualTo(bounds.bottom));
           }
           final list = tester.widget<ListView>(_key('reader-directory-scroll'));
-          expect(bounds.height, closeTo(list.itemExtent!, .5));
+          // Volume headers carry their own stride now, so the chapter rows go
+          // through the per-row builder instead of one global itemExtent; the
+          // sibling row below still pins the shared chapter stride.
+          expect(list.itemExtent, isNull);
+          expect(list.itemExtentBuilder, isNotNull);
           expect(
             bounds.height,
             greaterThanOrEqualTo(title.height + progress.height),
@@ -520,6 +528,151 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
+
+  testWidgets(
+    'details tags sit tight between the synopsis title and abstract',
+    (tester) async {
+      final fixture = _PanelFixture();
+      await fixture.open(tester);
+      await _tap(tester, _key('reader-book-tab-0'));
+      final header = tester.getRect(find.text('简介'));
+      final chip = tester.getRect(find.widgetWithText(Chip, '完整分类'));
+      final body = tester.getRect(find.text('重新加载后的完整简介'));
+      expect(
+        chip.height,
+        lessThanOrEqualTo(36),
+        reason: '只读标签不应保留 Material 的 48dp 触摸高度',
+      );
+      expect(chip.top - header.bottom, lessThanOrEqualTo(12));
+      expect(body.top - chip.bottom, lessThanOrEqualTo(14));
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('details tags wrap on a narrow screen with an 8dp rhythm', (
+    tester,
+  ) async {
+    final fixture = _PanelFixture();
+    fixture.detailLoader = () async => const BookDetail(
+      bookId: 'panel-book',
+      title: '完整书名',
+      author: _author,
+      abstract: '重新加载后的完整简介',
+      tags: ['完整分类一', '完整分类二', '完整分类三', '完整分类四', '完整分类五', '完整分类六'],
+    );
+    await fixture.open(tester, size: const Size(320, 844));
+    await _tap(tester, _key('reader-book-tab-0'));
+    final chips = find.byType(Chip);
+    expect(chips, findsNWidgets(6));
+    final rects = [for (var i = 0; i < 6; i++) tester.getRect(chips.at(i))];
+    expect(
+      rects.any((rect) => rect.top != rects.first.top),
+      isTrue,
+      reason: '窄屏下标签必须换行',
+    );
+    for (final rect in rects) {
+      expect(rect.height, lessThanOrEqualTo(36));
+    }
+    final firstRowBottom = rects
+        .where((rect) => rect.top == rects.first.top)
+        .map((rect) => rect.bottom)
+        .reduce(math.max);
+    final secondRowTop = rects
+        .where((rect) => rect.top > rects.first.top)
+        .map((rect) => rect.top)
+        .reduce(math.min);
+    expect(secondRowTop - firstRowBottom, closeTo(8, .5));
+    final lastChipBottom = rects.map((rect) => rect.bottom).reduce(math.max);
+    final body = tester.getRect(find.text('重新加载后的完整简介'));
+    expect(body.top - lastChipBottom, closeTo(12, 1));
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('details without tags keeps one compact gap above the abstract', (
+    tester,
+  ) async {
+    final fixture = _PanelFixture();
+    fixture.detailLoader = () async => const BookDetail(
+      bookId: 'panel-book',
+      title: '完整书名',
+      author: _author,
+      abstract: '重新加载后的完整简介',
+      tags: [],
+    );
+    final book = MediaItem(
+      id: 'panel-book',
+      title: '缓存书名',
+      cover: '',
+      author: '缓存作者',
+      badge: '',
+      ep: '',
+      kind: 'book',
+      intro: '离线保留的简介',
+      categories: const [],
+    );
+    await fixture.open(tester, book: book);
+    await _tap(tester, _key('reader-book-tab-0'));
+    expect(find.byType(Chip), findsNothing);
+    final header = tester.getRect(find.text('简介'));
+    final body = tester.getRect(find.text('重新加载后的完整简介'));
+    expect(body.top - header.bottom, closeTo(12, 1));
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  for (final preset in const [ReaderThemePreset.dark, ReaderThemePreset.eink]) {
+    testWidgets('details tags follow the ${preset.name} preset', (
+      tester,
+    ) async {
+      final fixture = _PanelFixture();
+      await fixture.open(tester, preset: preset);
+      await _tap(tester, _key('reader-book-tab-0'));
+      final chip = tester.widget<Chip>(find.widgetWithText(Chip, '完整分类'));
+      expect(chip.backgroundColor, preset.fieldColor);
+      final body = tester.widget<Text>(find.text('重新加载后的完整简介'));
+      expect(body.style?.color, preset.textColor);
+      final header = tester.getRect(find.text('简介'));
+      final chipRect = tester.getRect(find.widgetWithText(Chip, '完整分类'));
+      expect(chipRect.height, lessThanOrEqualTo(36));
+      expect(chipRect.top - header.bottom, lessThanOrEqualTo(12));
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    });
+  }
+
+  // Bug 回归：软件与阅读明暗相反时，笔记筛选的 ChoiceChip 必须
+  // 跟随阅读预设——不能漏回软件基底的深色（未选中曾经纯黑，修后又
+  // 让选中态纯黑）。这里直读渲染出的 chip 节点，确保主题经多层
+  // Theme 包装后真的传到了 chip。
+  for (final (app, preset) in const [
+    (Brightness.dark, ReaderThemePreset.light),
+    (Brightness.light, ReaderThemePreset.dark),
+  ]) {
+    testWidgets(
+      'notes filter chips follow the reader preset on a ${app.name} app',
+      (tester) async {
+        final fixture = _PanelFixture();
+        await fixture.open(tester, preset: preset, appBrightness: app);
+        await _tap(tester, _key('reader-book-tab-2'));
+        final chipTheme = ChipTheme.of(
+          tester.element(_key('reader-book-notes-filter-all')),
+        );
+        // ChoiceChip 选中态真正读的字段，不能是软件深色的纯黑。
+        expect(
+          chipTheme.secondarySelectedColor,
+          preset.accentColor.withValues(alpha: 0.12),
+        );
+        expect(chipTheme.backgroundColor, preset.fieldColor);
+        expect(chipTheme.labelStyle?.color, preset.textColor);
+        expect(chipTheme.secondarySelectedColor, isNot(Colors.black));
+        expect(chipTheme.backgroundColor, isNot(Colors.black));
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox());
+      },
+    );
+  }
 
   testWidgets(
     'chapter filter and reverse order return catalogue index through the shell route',

@@ -1,7 +1,9 @@
 import 'dart:convert';
+import 'dart:ui' show Tristate;
 
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -122,6 +124,547 @@ void main() {
         expect(launched.value, 2);
       },
     );
+
+    for (final style in const [AppThemeStyle.classic, AppThemeStyle.archive]) {
+      testWidgets('${style.name} volume header hugs its first chapter', (
+        tester,
+      ) async {
+        final store = await _style(style);
+        await _launch<int>(tester, store, _directory(chapters: _volumes));
+        await tester.pumpAndSettle();
+
+        // The header owns a shorter extent than the chapter rows, but its
+        // label hugs the slot bottom: the spare height reads as separation
+        // above the group instead of a gap above the first chapter.
+        final slot = tester.getRect(
+          find.byKey(const ValueKey('reader-volume-卷一')),
+        );
+        final header = tester.getRect(find.text('卷一'));
+        if (style == AppThemeStyle.classic) {
+          // The filled bar shrinks to 40dp while the whole slot stays
+          // tappable. Assert the bar itself: a bare slot-height check would
+          // stay green even if the bar grew back to fill the whole slot.
+          final fill = tester.getRect(
+            find.byKey(const ValueKey('reader-volume-fill-卷一')),
+          );
+          expect(fill.height, closeTo(40, .5));
+          expect(fill.bottom, closeTo(slot.bottom, .5));
+          expect(slot.height, greaterThanOrEqualTo(48));
+        }
+        expect(header.bottom, closeTo(slot.bottom - 10, 1));
+        final first = tester.getRect(find.text('晨光'));
+        expect(
+          first.top - header.bottom,
+          lessThan(34),
+          reason: '${style.name} 卷头必须贴近其下第一章',
+        );
+
+        // Expanding a collapsed volume keeps the same tight spacing.
+        await tester.tap(find.byKey(const ValueKey('reader-volume-卷二')));
+        await tester.pumpAndSettle();
+        final secondHeader = tester.getRect(find.text('卷二'));
+        final secondFirst = tester.getRect(find.text('暮色'));
+        expect(secondFirst.top - secondHeader.bottom, lessThan(34));
+        expect(tester.takeException(), isNull);
+      });
+    }
+
+    testWidgets('classic volume header stays tappable above its filled bar', (
+      tester,
+    ) async {
+      final store = await _style(AppThemeStyle.classic);
+      await _launch<int>(tester, store, _directory(chapters: _volumes));
+      await tester.pumpAndSettle();
+      final slot = tester.getRect(
+        find.byKey(const ValueKey('reader-volume-卷二')),
+      );
+      final fill = tester.getRect(
+        find.byKey(const ValueKey('reader-volume-fill-卷二')),
+      );
+      expect(fill.height, closeTo(40, .5));
+      expect(slot.top, lessThan(fill.top), reason: '填充栏上方的空槽仍是热区');
+      // Tap the bare slot band above the filled bar, not the bar itself.
+      await tester.tapAt(Offset(slot.center.dx, slot.top + 4));
+      await tester.pumpAndSettle();
+      expect(find.text('暮色'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('classic embedded volume header hugs its first chapter', (
+      tester,
+    ) async {
+      final store = await _style(AppThemeStyle.classic);
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(
+        AppUiHost(
+          store: store,
+          home: Scaffold(
+            body: SizedBox(
+              height: 700,
+              child: ReaderDirectorySheet(
+                embedded: true,
+                chapters: _volumes,
+                currentIndex: 0,
+                cachedIds: const {},
+                bookId: 'directory-book',
+                aiStatuses: const [],
+                aiController: AiReadingController.instance,
+              ),
+            ),
+          ),
+        ),
+      );
+      // The embedded sheet keeps a live animation, so settle is not available.
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+
+      final slot = tester.getRect(
+        find.byKey(const ValueKey('reader-volume-卷一')),
+      );
+      expect(slot.height, closeTo(48, .5), reason: '嵌入卷头只占自己的行高');
+      final header = tester.getRect(find.text('卷一'));
+      expect(header.bottom, closeTo(slot.bottom - 8, 1));
+      final first = tester.getRect(find.text('晨光'));
+      expect(
+        first.top - header.bottom,
+        lessThan(34),
+        reason: '嵌入目录的卷头必须贴近其下第一章',
+      );
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('embedded directory opens flush with the first volume', (
+      tester,
+    ) async {
+      final store = await _style(AppThemeStyle.classic);
+      await _pumpEmbeddedDirectory(tester, store: store, chapters: _volumes);
+      final viewport = tester.getRect(
+        find.byKey(const ValueKey('reader-directory-scroll')),
+      );
+      final slot = tester.getRect(
+        find.byKey(const ValueKey('reader-volume-卷一')),
+      );
+      final header = tester.getRect(find.text('卷一'));
+      // Only the list's own 8dp top padding sits above the first header; the
+      // old shared chapter slot left most of a 71dp row blank here.
+      expect(slot.top - viewport.top, closeTo(8, .5));
+      expect(header.top - slot.top, lessThanOrEqualTo(21));
+      expect(tester.takeException(), isNull);
+    });
+
+    for (final preset in const [
+      ReaderThemePreset.light,
+      ReaderThemePreset.eink,
+    ]) {
+      testWidgets(
+        'embedded volume header closes with the ${preset.name} chapter rule',
+        (tester) async {
+          final store = await _style(AppThemeStyle.classic);
+          await _pumpEmbeddedDirectory(
+            tester,
+            store: store,
+            chapters: _volumes,
+            preset: preset,
+          );
+          final viewport = tester.getRect(
+            find.byKey(const ValueKey('reader-directory-scroll')),
+          );
+          final slot = tester.getRect(
+            find.byKey(const ValueKey('reader-volume-卷一')),
+          );
+          final ruleFinder = find.byKey(
+            const ValueKey('reader-volume-rule-卷一'),
+          );
+          final rule = tester.getRect(ruleFinder);
+          final decoration =
+              tester.widget<DecoratedBox>(ruleFinder).decoration
+                  as BoxDecoration;
+          final side = (decoration.border! as Border).bottom;
+          // The same inset 0.5dp line the chapter rows draw under every title.
+          expect(rule.bottom, closeTo(slot.bottom, .5));
+          expect(rule.left, closeTo(viewport.left + 16, .5));
+          expect(rule.right, closeTo(viewport.right - 16, .5));
+          expect(side.color, preset.borderColor);
+          expect(side.width, .5);
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+
+    testWidgets('classic embedded volume header expands and collapses on tap', (
+      tester,
+    ) async {
+      final store = await _style(AppThemeStyle.classic);
+      await _pumpEmbeddedDirectory(tester, store: store, chapters: _volumes);
+      final volume = find.byKey(const ValueKey('reader-volume-卷二'));
+      Finder chevron(IconData icon) =>
+          find.descendant(of: volume, matching: find.byIcon(icon));
+      expect(find.text('暮色'), findsNothing);
+      expect(chevron(LucideIcons.chevron_right), findsOneWidget);
+      await tester.tap(volume);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.text('暮色'), findsOneWidget);
+      expect(find.text('夜雨'), findsOneWidget);
+      expect(chevron(LucideIcons.chevron_down), findsOneWidget);
+      await tester.tap(volume);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.text('暮色'), findsNothing);
+      expect(chevron(LucideIcons.chevron_right), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    // W4: 目录在深滚之后遇到行高（stride）变化，必须原地重锚——保留当前
+    // 行和它的行内残差（residual），既不能跳回顶部，也不能跳回「当前章」。
+    // 触发路径是 didChangeDependencies 里 textScaler 变化导致
+    // _itemExtent / _volumeExtent 改变。
+    testWidgets('deep-scrolled directory re-anchors on a stride change', (
+      tester,
+    ) async {
+      final store = await _style(AppThemeStyle.classic);
+      final chapters = <Chapter>[
+        for (var v = 0; v < 10; v++)
+          for (var c = 0; c < 6; c++)
+            Chapter(
+              itemId: 'v$v-c$c',
+              title: '第${v * 6 + c + 1}章',
+              // 单一卷：分组默认展开，不会因折叠把列表缩得很短，
+              // 深滚才能落在真实的多行区间上。
+              volumeName: '卷一',
+            ),
+      ];
+      final volumeNames = {for (final ch in chapters) ch.volumeName};
+      const scrollKey = ValueKey('reader-directory-scroll');
+
+      // 返回横跨视口顶线的那一行：它的 key 与「顶线到它顶边的残差像素」。
+      (Key?, double) anchoredTop() {
+        final viewport = tester.getRect(find.byKey(scrollKey));
+        Key? best;
+        double bestTop = -double.infinity;
+        double residual = 0;
+        void consider(Finder f) {
+          if (f.evaluate().isEmpty) return;
+          final r = tester.getRect(f);
+          if (r.top <= viewport.top + 0.5 &&
+              r.bottom > viewport.top &&
+              r.top > bestTop) {
+            bestTop = r.top;
+            best = tester.widget(f).key;
+            residual = viewport.top - r.top;
+          }
+        }
+
+        for (var i = 0; i < chapters.length; i++) {
+          consider(find.byKey(ValueKey('reader-directory-row-$i')));
+        }
+        for (final v in volumeNames) {
+          consider(find.byKey(ValueKey('reader-volume-$v')));
+        }
+        return (best, residual);
+      }
+
+      // 同一个 chapters 实例复用：若换列表，didUpdateWidget 会因
+      // `oldWidget.chapters != widget.chapters` 直接跳回当前章，绕过被测路径。
+      await _pumpEmbeddedDirectory(
+        tester,
+        store: store,
+        chapters: chapters,
+        textScale: 1,
+      );
+      final position = tester
+          .state<ScrollableState>(
+            find
+                .descendant(
+                  of: find.byKey(scrollKey),
+                  matching: find.byType(Scrollable),
+                )
+                .first,
+          )
+          .position;
+      position.jumpTo(600);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+
+      final (beforeKey, beforeResidual) = anchoredTop();
+      expect(beforeKey, isNotNull, reason: '深滚后应有一行横跨视口顶线');
+      expect(position.pixels, greaterThan(300), reason: '起始应停在较深的滚动位置');
+
+      // 放大 textScaler：classic 行高随缩放变化，触发 didChangeDependencies 的
+      // stride 重锚分支。chapters 仍是同一实例，所以不会走 didUpdateWidget 复位。
+      await _pumpEmbeddedDirectory(
+        tester,
+        store: store,
+        chapters: chapters,
+        textScale: 2,
+      );
+
+      final (afterKey, afterResidual) = anchoredTop();
+      expect(tester.takeException(), isNull);
+      // 锚定的行必须不变：既没跳回顶部，也没跳回「当前章」（第 1 章）。
+      expect(afterKey, beforeKey);
+      expect(afterKey, isNot(const ValueKey('reader-directory-row-0')));
+      // 行内残差按像素保留（重锚用 residual 原值加到新行偏移上）。
+      expect(
+        afterResidual,
+        closeTo(beforeResidual, 2.0),
+        reason: 'stride 变化后当前行的行内残差应保持不变',
+      );
+    });
+
+    for (final scale in const [1.5, 2.0]) {
+      for (final style in const [
+        AppThemeStyle.classic,
+        AppThemeStyle.archive,
+      ]) {
+        testWidgets('${style.name} volume header fits 320dp at ${scale}x', (
+          tester,
+        ) async {
+          final store = await _style(style);
+          await _launch<int>(
+            tester,
+            store,
+            _directory(chapters: _volumes),
+            size: const Size(320, 700),
+            textScale: scale,
+          );
+          await tester.pumpAndSettle();
+          final slot = tester.getRect(
+            find.byKey(const ValueKey('reader-volume-卷一')),
+          );
+          final header = tester.getRect(find.text('卷一'));
+          expect(
+            slot.bottom - header.bottom,
+            inInclusiveRange(0, 12),
+            reason: '${style.name} 卷头在 ${scale}x 下仍贴槽底',
+          );
+          final first = tester.getRect(find.text('晨光'));
+          final row0 = tester.getRect(
+            find.byKey(const ValueKey('reader-directory-row-0')),
+          );
+          expect(
+            first.top - header.bottom,
+            lessThan(row0.height * .65),
+            reason: '${style.name} 在 ${scale}x 下卷头仍贴近首章',
+          );
+          if (style == AppThemeStyle.classic) {
+            final fill = tester.getRect(
+              find.byKey(const ValueKey('reader-volume-fill-卷一')),
+            );
+            expect(fill.height, closeTo(40, .5));
+          }
+          expect(tester.takeException(), isNull);
+        });
+      }
+
+      testWidgets('classic embedded volume header fits 320dp at ${scale}x', (
+        tester,
+      ) async {
+        final store = await _style(AppThemeStyle.classic);
+        await _pumpEmbeddedDirectory(
+          tester,
+          store: store,
+          chapters: _volumes,
+          size: const Size(320, 700),
+          textScale: scale,
+        );
+        final slot = tester.getRect(
+          find.byKey(const ValueKey('reader-volume-卷一')),
+        );
+        final header = tester.getRect(find.text('卷一'));
+        expect(header.bottom, closeTo(slot.bottom - 8, 2));
+        final first = tester.getRect(find.text('晨光'));
+        final row0 = tester.getRect(
+          find.byKey(const ValueKey('reader-directory-row-0')),
+        );
+        expect(
+          first.top - header.bottom,
+          lessThan(row0.height * .65),
+          reason: '嵌入目录在 ${scale}x 下卷头仍贴近首章',
+        );
+        expect(tester.takeException(), isNull);
+      });
+    }
+
+    testWidgets('classic filtered volume header stays expanded and inert', (
+      tester,
+    ) async {
+      final store = await _style(AppThemeStyle.classic);
+      await _launch<int>(tester, store, _directory(chapters: _volumes));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey('reader-chapter-search')),
+        '卷二',
+      );
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.pump();
+      expect(find.text('找到 2 章'), findsOneWidget);
+      final volume = find.byKey(const ValueKey('reader-volume-卷二'));
+      // Filtering forces every matching group open and disables the toggle.
+      expect(tester.widget<InkWell>(volume).onTap, isNull);
+      final slot = tester.getRect(volume);
+      final header = tester.getRect(
+        find.descendant(of: volume, matching: find.text('卷二')),
+      );
+      expect(header.bottom, closeTo(slot.bottom - 10, 1));
+      final first = tester.getRect(find.text('暮色'));
+      expect(first.top - header.bottom, lessThan(34));
+      // Tapping the inert header must not collapse the filtered group.
+      await tester.tapAt(slot.center);
+      await tester.pump();
+      expect(find.text('晨光'), findsNothing);
+      expect(find.text('暮色'), findsOneWidget);
+      expect(find.text('夜雨'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('classic volume header exposes expanded semantics', (
+      tester,
+    ) async {
+      final semantics = tester.ensureSemantics();
+      try {
+        final store = await _style(AppThemeStyle.classic);
+        await _launch<int>(tester, store, _directory(chapters: _volumes));
+        await tester.pumpAndSettle();
+        expect(_expandedOf(tester, '卷二'), Tristate.isFalse);
+        await tester.tap(find.byKey(const ValueKey('reader-volume-卷二')));
+        await tester.pumpAndSettle();
+        expect(_expandedOf(tester, '卷二'), Tristate.isTrue);
+        await tester.tap(find.byKey(const ValueKey('reader-volume-卷二')));
+        await tester.pumpAndSettle();
+        expect(_expandedOf(tester, '卷二'), Tristate.isFalse);
+      } finally {
+        semantics.dispose();
+      }
+    });
+
+    testWidgets('archive volume header exposes expanded semantics', (
+      tester,
+    ) async {
+      final semantics = tester.ensureSemantics();
+      try {
+        final store = await _style(AppThemeStyle.archive);
+        await _launch<int>(tester, store, _directory(chapters: _volumes));
+        await tester.pumpAndSettle();
+        expect(_expandedOf(tester, '卷二'), Tristate.isFalse);
+        await tester.tap(find.byKey(const ValueKey('reader-volume-卷二')));
+        await tester.pumpAndSettle();
+        expect(_expandedOf(tester, '卷二'), Tristate.isTrue);
+        await tester.tap(find.byKey(const ValueKey('reader-volume-卷二')));
+        await tester.pumpAndSettle();
+        expect(_expandedOf(tester, '卷二'), Tristate.isFalse);
+      } finally {
+        semantics.dispose();
+      }
+    });
+
+    testWidgets('embedded volume header exposes expanded semantics', (
+      tester,
+    ) async {
+      final semantics = tester.ensureSemantics();
+      try {
+        final store = await _style(AppThemeStyle.classic);
+        await _pumpEmbeddedDirectory(tester, store: store, chapters: _volumes);
+        expect(_expandedOf(tester, '卷二'), Tristate.isFalse);
+        await tester.tap(find.byKey(const ValueKey('reader-volume-卷二')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+        expect(_expandedOf(tester, '卷二'), Tristate.isTrue);
+        await tester.tap(find.byKey(const ValueKey('reader-volume-卷二')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+        expect(_expandedOf(tester, '卷二'), Tristate.isFalse);
+      } finally {
+        semantics.dispose();
+      }
+    });
+
+    testWidgets('reversed directory keeps the volume header hugged', (
+      tester,
+    ) async {
+      final store = await _style(AppThemeStyle.classic);
+      await _launch<int>(tester, store, _directory(chapters: _volumes));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('reader-catalogue-order')));
+      await tester.pumpAndSettle();
+      // Reverse projection: the collapsed 卷二 header comes first, then 卷一.
+      expect(find.text('夜雨'), findsNothing);
+      expect(find.text('暮色'), findsNothing);
+      expect(find.text('晨光'), findsOneWidget);
+      final slot = tester.getRect(
+        find.byKey(const ValueKey('reader-volume-卷一')),
+      );
+      final header = tester.getRect(find.text('卷一'));
+      expect(header.bottom, closeTo(slot.bottom - 10, 1));
+      final first = tester.getRect(find.text('晨光'));
+      expect(first.top - header.bottom, lessThan(34));
+      // Expanding 卷二 in reverse order hugs 夜雨, its first projected chapter.
+      await tester.tap(find.byKey(const ValueKey('reader-volume-卷二')));
+      await tester.pumpAndSettle();
+      final secondHeader = tester.getRect(find.text('卷二'));
+      final secondFirst = tester.getRect(find.text('夜雨'));
+      expect(secondFirst.top - secondHeader.bottom, lessThan(34));
+      expect(tester.takeException(), isNull);
+    });
+
+    for (final preset in const [
+      ReaderThemePreset.dark,
+      ReaderThemePreset.eink,
+    ]) {
+      testWidgets('classic volume fill follows the ${preset.name} preset', (
+        tester,
+      ) async {
+        final store = await _style(AppThemeStyle.classic);
+        await _launch<int>(
+          tester,
+          store,
+          _directory(chapters: _volumes, preset: preset),
+        );
+        await tester.pumpAndSettle();
+        final fill = tester.widget<Ink>(
+          find.byKey(const ValueKey('reader-volume-fill-卷一')),
+        );
+        final decoration = fill.decoration! as BoxDecoration;
+        expect(decoration.color, preset.fieldColor);
+        final label = tester.widget<Text>(find.text('卷一'));
+        expect(label.style?.color, preset.textColor);
+        final slot = tester.getRect(
+          find.byKey(const ValueKey('reader-volume-卷一')),
+        );
+        final header = tester.getRect(find.text('卷一'));
+        expect(header.bottom, closeTo(slot.bottom - 10, 1));
+        expect(tester.takeException(), isNull);
+      });
+    }
+
+    testWidgets('classic directory centers the current chapter on open', (
+      tester,
+    ) async {
+      final store = await _style(AppThemeStyle.classic);
+      await _launch<int>(
+        tester,
+        store,
+        _directory(chapters: _manyChapters, currentIndex: 38),
+      );
+      await tester.pumpAndSettle();
+      final row = find.byKey(const ValueKey('reader-directory-row-38'));
+      expect(row, findsOneWidget);
+      final viewport = tester.getRect(
+        find.byKey(const ValueKey('reader-directory-scroll')),
+      );
+      final rect = tester.getRect(row);
+      expect(rect.top, greaterThanOrEqualTo(viewport.top));
+      expect(rect.bottom, lessThanOrEqualTo(viewport.bottom));
+      expect(rect.center.dy, closeTo(viewport.center.dy, 40));
+      expect(
+        find.byKey(const ValueKey('reader-directory-row-0')),
+        findsNothing,
+      );
+      expect(tester.takeException(), isNull);
+    });
 
     testWidgets('archive keeps the count-less header and search toggle', (
       tester,
@@ -1441,16 +1984,73 @@ Widget _directory({
   required List<Chapter> chapters,
   Set<String> cachedIds = const {},
   List<AiChapterCheckStatus>? aiStatuses,
+  int currentIndex = 0,
+  ReaderThemePreset preset = ReaderThemePreset.light,
 }) => ReaderDirectorySheet(
   chapters: chapters,
-  currentIndex: 0,
+  currentIndex: currentIndex,
   cachedIds: cachedIds,
   bookId: 'directory-book',
   aiStatuses:
       aiStatuses ??
       [_aiStatus('c1', AiChapterCheckState.checked, version: 'v1')],
   aiController: AiReadingController.instance,
+  preset: preset,
 );
+
+/// Mounts the embedded sheet with a real text scale (the classic book panel
+/// renders it inside its own bounded surface).
+Future<void> _pumpEmbeddedDirectory(
+  WidgetTester tester, {
+  required AppThemeStyleStore store,
+  required List<Chapter> chapters,
+  int currentIndex = 0,
+  ReaderThemePreset preset = ReaderThemePreset.light,
+  Size size = const Size(390, 844),
+  double textScale = 1,
+  double height = 700,
+}) async {
+  tester.view.physicalSize = size;
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
+  await tester.pumpWidget(
+    AppUiHost(
+      store: store,
+      home: Builder(
+        builder: (context) => MediaQuery(
+          data: MediaQuery.of(
+            context,
+          ).copyWith(textScaler: TextScaler.linear(textScale)),
+          child: Scaffold(
+            body: SizedBox(
+              height: height,
+              child: ReaderDirectorySheet(
+                embedded: true,
+                chapters: chapters,
+                currentIndex: currentIndex,
+                cachedIds: const {},
+                bookId: 'directory-book',
+                aiStatuses: const [],
+                aiController: AiReadingController.instance,
+                preset: preset,
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+  // The embedded sheet keeps a live animation, so settle is not available.
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 400));
+}
+
+/// Expanded flag of a volume header; call inside `ensureSemantics`.
+Tristate _expandedOf(WidgetTester tester, String volume) => tester
+    .getSemantics(find.byKey(ValueKey('reader-volume-$volume')))
+    .flagsCollection
+    .isExpanded;
 
 AiChapterCheckStatus _aiStatus(
   String chapterId,

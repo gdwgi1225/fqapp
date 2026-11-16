@@ -234,6 +234,50 @@ extension ReaderThemeColors on ReaderThemePreset {
         prefixIconColor: mutedTextColor,
         suffixIconColor: mutedTextColor,
       ),
+      // Material Chip / ChoiceChip 只读 base.chipTheme：软件深色 + 阅读浅色时，
+      // 笔记筛选（全部 / 书签 / 划线）和简介分类这些 chip 会漏出深色 chipTheme
+      // 底 + 深色字，糊成黑块；白色软件 + 深色阅读同理（与上面 listTileTheme
+      // 是同一类泄漏）。这里统一改按阅读预设派生，chip 才跟正文同一套配色。
+      chipTheme: base.chipTheme.copyWith(
+        backgroundColor: fieldColor,
+        // ChoiceChip（笔记筛选 / 搜索排序）选中背景读 secondarySelectedColor，
+        // FilterChip 选中读 selectedColor，两个字段都要覆盖；只设后者会让
+        // ChoiceChip 选中态漏出 base 深色主题的 secondarySelectedColor。
+        selectedColor: accentColor.withValues(alpha: 0.12),
+        secondarySelectedColor: accentColor.withValues(alpha: 0.12),
+        labelStyle: (base.chipTheme.labelStyle ?? const TextStyle()).copyWith(
+          color: textColor,
+        ),
+      ),
+      // 与 chipTheme 同一类泄漏：base 的 dialog / card / popup 子主题在构造时
+      // 就按软件明暗解析好了具体色值，copyWith 只换 colorScheme 不会重算它们，
+      // 深色软件 + 浅色阅读时弹出的对话框标题 / 卡片 / 菜单仍会漏出深色。这里
+      // 一并补全，让阅读弹层配色自成一套。SnackBar 反过来保持跟随软件（深色
+      // 吐司在白底阅读上才看得见），故意不覆盖。
+      dialogTheme: base.dialogTheme.copyWith(
+        backgroundColor: sheetColor,
+        surfaceTintColor: Colors.transparent,
+        titleTextStyle: (base.dialogTheme.titleTextStyle ?? const TextStyle())
+            .copyWith(color: textColor),
+        contentTextStyle:
+            (base.dialogTheme.contentTextStyle ?? const TextStyle()).copyWith(
+              color: mutedTextColor,
+            ),
+      ),
+      cardTheme: base.cardTheme.copyWith(
+        color: panelColor,
+        surfaceTintColor: Colors.transparent,
+      ),
+      popupMenuTheme: base.popupMenuTheme.copyWith(
+        color: panelColor,
+        surfaceTintColor: Colors.transparent,
+      ),
+      // Divider 优先读 dividerTheme.color，只设 dividerColor 会被它盖住。
+      dividerTheme: DividerThemeData(
+        color: borderColor,
+        thickness: 0.6,
+        space: 1,
+      ),
       dividerColor: borderColor,
       sliderTheme: base.sliderTheme.copyWith(
         activeTrackColor: accentColor,

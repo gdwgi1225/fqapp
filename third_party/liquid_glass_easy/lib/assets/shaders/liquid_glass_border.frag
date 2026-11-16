@@ -155,7 +155,7 @@ vec3 sampleBackdropColor(vec2 refractedPx) {
 /* ================
    MAIN
    ================ */
-void main() {
+vec4 renderLiquidGlassBorder() {
     vec2 fragPosPx = FlutterFragCoord().xy;
     float invResY  = 1.0 / u_resolution.y;
     vec2  uvNorm   = fragPosPx * invResY;
@@ -231,8 +231,7 @@ void main() {
 
     // Cheap early-out for fragments well past the AA band.
     if (shapeData.orthoDist > outerAa) {
-        frag_color = vec4(0.0);
-        return;
+        return vec4(0.0);
     }
 
     vec2 magPx = applyLensMagnification(
@@ -277,5 +276,9 @@ void main() {
     // Apply the soft outer-edge mask so the rounded corners fade
     // out smoothly on Impeller (where there's no surrounding draw
     // call to provide AA).
-    frag_color = borderPremul * outerMask;
+    return borderPremul * outerMask;
+}
+
+void main() {
+    frag_color = renderLiquidGlassBorder();
 }
