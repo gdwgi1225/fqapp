@@ -75,6 +75,7 @@ void main() {
       // 反向：深色阅读预设叠在浅色软件主题上。
       final onLightApp = preset.theme(lightBase);
       for (final theme in [onDarkApp, onLightApp]) {
+        expect(theme.canvasColor, preset.backgroundColor);
         expect(theme.chipTheme.backgroundColor, preset.fieldColor);
         expect(
           theme.chipTheme.selectedColor,
@@ -105,9 +106,9 @@ void main() {
     }
   });
 
-  // 字段设了不等于渲染对了：本轮 chip bug 的根因正是 secondarySelectedColor
-  // 没被 ChoiceChip 消费。这里在阅读预设子树里实渲染 Card / Dialog / 选中
-  // ChoiceChip，直读绘制出来的 Material / Ink 颜色；Divider / PopupMenu 目前
+  // 字段设了不等于渲染对了：选中 Chip 的半透明 Ink 还会叠在 Material 底色上。
+  // 这里在阅读预设子树里实渲染 Card / Dialog / 选中 ChoiceChip，直读绘制出来的
+  // Material / Ink 颜色；Divider / PopupMenu 目前
   // 阅读无消费方（均显式传色或走自绘控件），改在真实 widget 的 element
   // context 上解析子主题，锁定「经嵌套 Theme 传到渲染 context」这一契约。
   testWidgets('reader subthemes reach the rendered widgets', (tester) async {
@@ -181,6 +182,14 @@ void main() {
         (chipInk.decoration! as ShapeDecoration).color,
         isNot(Colors.black),
       );
+      // Ink 正确仍可能叠在软件深色画布上，必须同时检查实际 Material 底层。
+      final chipSurface = tester.widget<PhysicalShape>(
+        find.descendant(
+          of: find.byKey(const ValueKey('probe-chip')),
+          matching: find.byType(PhysicalShape),
+        ),
+      );
+      expect(chipSurface.color, preset.backgroundColor);
       // 分隔线 / 弹出菜单：在当前渲染 context 解析到的子主题即预设色。
       expect(dividerColor, preset.borderColor);
       expect(popupColor, preset.panelColor);

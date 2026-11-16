@@ -642,10 +642,8 @@ void main() {
     });
   }
 
-  // Bug 回归：软件与阅读明暗相反时，笔记筛选的 ChoiceChip 必须
-  // 跟随阅读预设——不能漏回软件基底的深色（未选中曾经纯黑，修后又
-  // 让选中态纯黑）。这里直读渲染出的 chip 节点，确保主题经多层
-  // Theme 包装后真的传到了 chip。
+  // 软件与阅读明暗相反时，笔记筛选的半透明选中色也须叠在阅读画布上。
+  // 检查多层 Theme 后实际绘制的底色和标签，避免字段正确但合成结果低对比。
   for (final (app, preset) in const [
     (Brightness.dark, ReaderThemePreset.light),
     (Brightness.light, ReaderThemePreset.dark),
@@ -668,6 +666,35 @@ void main() {
         expect(chipTheme.labelStyle?.color, preset.textColor);
         expect(chipTheme.secondarySelectedColor, isNot(Colors.black));
         expect(chipTheme.backgroundColor, isNot(Colors.black));
+        for (final filter in ['all', 'bookmarks', 'underlines']) {
+          final chip = _key('reader-book-notes-filter-$filter');
+          if (filter != 'all') await _tap(tester, chip);
+          expect(tester.widget<ChoiceChip>(chip).selected, isTrue);
+          final surface = tester.widget<PhysicalShape>(
+            find.descendant(of: chip, matching: find.byType(PhysicalShape)),
+          );
+          expect(surface.color, preset.backgroundColor);
+          final ink = tester.widget<Ink>(
+            find.descendant(of: chip, matching: find.byType(Ink)),
+          );
+          final selectedColor = (ink.decoration! as ShapeDecoration).color!;
+          expect(selectedColor, preset.accentColor.withValues(alpha: .12));
+          final label = find.descendant(of: chip, matching: find.byType(Text));
+          expect(
+            DefaultTextStyle.of(tester.element(label)).style.color,
+            preset.textColor,
+          );
+          final luminance = Color.alphaBlend(
+            selectedColor,
+            surface.color,
+          ).computeLuminance();
+          final labelLuminance = preset.textColor.computeLuminance();
+          expect(
+            (math.max(luminance, labelLuminance) + .05) /
+                (math.min(luminance, labelLuminance) + .05),
+            greaterThanOrEqualTo(4.5),
+          );
+        }
         expect(tester.takeException(), isNull);
         await tester.pumpWidget(const SizedBox());
       },
