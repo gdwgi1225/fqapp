@@ -489,7 +489,7 @@ class _HomePageState extends ConsumerState<HomePage> {
   Widget _buildTabPage(int target, double gridWidth, double textScale) {
     final palette = HomePalette.of(context);
     final kind = ref.read(homeProvider.notifier).identityOf(target).kind;
-    if (target == 6 || kind == 'ugc') {
+    if (kind == 'ugc') {
       return ValueListenableBuilder<int?>(
         valueListenable: shellVisibleTab,
         builder: (context, shellTab, _) => UgcStoryFeed(

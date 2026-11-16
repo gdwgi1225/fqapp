@@ -101,6 +101,148 @@ void _cancelAdvanceCountdown(_AudioPlaybackController c) {
   }
 }
 
+bool _hasPendingTrackRecovery(_AudioPlaybackController c) =>
+    c._subtitlesRecoveryPending || c._timeTrackRecoveryPending;
+
+bool _canRecoverTracks(_AudioPlaybackController c) {
+  final player = c._player;
+  return !c._closed &&
+      !c._loading &&
+      c._error == null &&
+      !c._completed &&
+      c._wantPlay &&
+      player != null &&
+      player.playing &&
+      !player.buffering;
+}
+
+/// Stops a queued or in-flight recovery request. Pending stays set so resuming
+/// the same chapter can arm a fresh probe without reopening reader follow.
+void _cancelTrackRecovery(_AudioPlaybackController c) {
+  c._trackRecoveryTimer?.cancel();
+  c._trackRecoveryTimer = null;
+  final cancellation = c._trackRecoveryCancellation;
+  c._trackRecoveryCancellation = null;
+  if (cancellation != null && !cancellation.isCompleted) {
+    cancellation.complete();
+  }
+}
+
+void _resetTrackRecovery(_AudioPlaybackController c) {
+  _cancelTrackRecovery(c);
+  c._subtitlesRecoveryPending = false;
+  c._timeTrackRecoveryPending = false;
+}
+
+/// 初次重试耗尽后只留下一个低频探测机会。既有 timer 或请求在途时不重置
+/// 倒计时，避免 timeline 与 timepoints 完成顺序不同而放大请求频率。
+void _scheduleTrackRecovery(_AudioPlaybackController c) {
+  if (c._closed || !_hasPendingTrackRecovery(c)) {
+    _cancelTrackRecovery(c);
+    return;
+  }
+  if (!_canRecoverTracks(c)) {
+    _cancelTrackRecovery(c);
+    return;
+  }
+  if (c._trackRecoveryTimer != null || c._trackRecoveryCancellation != null) {
+    return;
+  }
+  c._trackRecoveryTimer = Timer(
+    _AudioPlaybackController._trackRecoveryDelay,
+    () {
+      c._trackRecoveryTimer = null;
+      if (!_hasPendingTrackRecovery(c) || !_canRecoverTracks(c)) return;
+      unawaited(_runTrackRecovery(c));
+    },
+  );
+}
+
+Future<void> _runTrackRecovery(_AudioPlaybackController c) async {
+  if (c._trackRecoveryCancellation != null || !_canRecoverTracks(c)) return;
+  final generation = c._generation;
+  final itemId = c._chapters[c._index].itemId;
+  final toneId = c._toneId;
+  final cancellation = Completer<void>();
+  c._trackRecoveryCancellation = cancellation;
+  try {
+    await Future.wait<void>([
+      if (c._subtitlesRecoveryPending)
+        _recoverSubtitlesOnce(c, generation, itemId, toneId, cancellation),
+      if (c._timeTrackRecoveryPending)
+        _recoverTimePointsOnce(c, generation, itemId, toneId, cancellation),
+    ]);
+  } catch (_) {
+    // Recovery is optional; the next eligible playback tick arms another probe.
+  } finally {
+    if (identical(c._trackRecoveryCancellation, cancellation)) {
+      c._trackRecoveryCancellation = null;
+    }
+    if (!cancellation.isCompleted) cancellation.complete();
+  }
+  if (c._current(generation)) _scheduleTrackRecovery(c);
+}
+
+Future<void> _recoverSubtitlesOnce(
+  _AudioPlaybackController c,
+  int generation,
+  String itemId,
+  String toneId,
+  Completer<void> cancellation,
+) async {
+  try {
+    final track = await c._loadSubtitles(
+      itemId,
+      toneId,
+      cancel: cancellation.future,
+    );
+    if (!c._current(generation) || cancellation.isCompleted) return;
+    c._subtitlesRecoveryPending = false;
+    // A successful empty server response is terminal, but it does not erase a
+    // usable local estimate. Only a nonempty server track replaces that
+    // fallback and clears the estimated marker.
+    if (track.isNotEmpty || !c._subtitlesEstimated) {
+      c._subtitles = track;
+      c._subtitlesEstimated = false;
+    }
+    c._publishReadAlong();
+    c._publishListeningSession(playing: c._player?.playing ?? false);
+  } catch (error) {
+    if (!c._current(generation) || cancellation.isCompleted) return;
+    if (!c._isTransientTrackFailure(error)) {
+      c._subtitlesRecoveryPending = false;
+    }
+  }
+}
+
+Future<void> _recoverTimePointsOnce(
+  _AudioPlaybackController c,
+  int generation,
+  String itemId,
+  String toneId,
+  Completer<void> cancellation,
+) async {
+  try {
+    final track = await c._loadTimePoints(
+      itemId,
+      toneId,
+      cancel: cancellation.future,
+    );
+    if (!c._current(generation) || cancellation.isCompleted) return;
+    // Track, readiness and the chapter alias publish from this one snapshot.
+    c._timeTrackRecoveryPending = false;
+    c._timeTrack = track;
+    c._timeTrackReady = true;
+    c._publishReadAlong();
+    c._publishListeningSession(playing: c._player?.playing ?? false);
+  } catch (error) {
+    if (!c._current(generation) || cancellation.isCompleted) return;
+    if (!c._isTransientTrackFailure(error)) {
+      c._timeTrackRecoveryPending = false;
+    }
+  }
+}
+
 /// 章节播完后的分流：听完本章 → 章末连播 → 其它。
 void _onChapterFinished(
   _AudioPlaybackController c, {
@@ -133,6 +275,7 @@ void _handleChapterCompleted(
   int generation,
 ) {
   if (c._closed || c._completed) return;
+  _cancelTrackRecovery(c);
   final shouldAdvance = c._wantPlay && c._autoAdvance;
   c._update(() {
     c._completed = true;

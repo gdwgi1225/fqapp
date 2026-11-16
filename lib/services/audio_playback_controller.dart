@@ -53,6 +53,11 @@ class _AudioPlaybackController extends ChangeNotifier
   static const _trackRetryAttempts = 3;
   static const _trackRetryDelay = Duration(milliseconds: 200);
   static const _trackRequestTimeout = Duration(seconds: 8);
+  static const _trackRecoveryDelay = Duration(seconds: 30);
+  Timer? _trackRecoveryTimer;
+  Completer<void>? _trackRecoveryCancellation;
+  bool _subtitlesRecoveryPending = false;
+  bool _timeTrackRecoveryPending = false;
   Timer? _saveTimer;
   // 小米公平运行内存 KILL 广播的刷盘注销函数，见 reader_page.dart。
   VoidCallback? _unregisterFairMemoryFlush;
@@ -515,6 +520,7 @@ class _AudioPlaybackController extends ChangeNotifier
   Future<void> _pauseForOtherMedia() async {
     _visibilityResumeGeneration = null;
     if (_closed) return;
+    _cancelTrackRecovery(this);
     _cancelAdvanceCountdown(this);
     if (!_wantPlay) return;
     _update(() => _wantPlay = false);
@@ -601,6 +607,7 @@ class _AudioPlaybackController extends ChangeNotifier
   }) async {
     if (_closed || index < 0 || index >= _chapters.length) return;
     // 任何换章动作都意味着用户自己接管了，倒计时窗口必须作废。
+    _resetTrackRecovery(this);
     _cancelAdvanceCountdown(this);
     final generation = ++_generation;
     _cancelTrackRequests();
@@ -896,15 +903,17 @@ class _AudioPlaybackController extends ChangeNotifier
     Future<void> cancel,
   ) async {
     var track = SubtitleTrack.empty;
+    var recoverableFailure = false;
     for (var attempt = 0; attempt < _trackRetryAttempts; attempt++) {
       if (!_current(generation)) return;
       try {
         track = await _loadSubtitles(itemId, toneId, cancel: cancel);
         break;
       } catch (error) {
-        if (!_current(generation) ||
-            !_isTransientTrackFailure(error) ||
-            attempt + 1 == _trackRetryAttempts) {
+        if (!_current(generation)) return;
+        if (!_isTransientTrackFailure(error)) break;
+        if (attempt + 1 == _trackRetryAttempts) {
+          recoverableFailure = true;
           break;
         }
         await _waitForTrackRetry(cancel, attempt);
@@ -932,10 +941,12 @@ class _AudioPlaybackController extends ChangeNotifier
       }
     }
     if (!_current(generation)) return;
+    _subtitlesRecoveryPending = recoverableFailure;
     _subtitles = track;
     _subtitlesEstimated = estimated;
     _publishReadAlong();
     _publishListeningSession(playing: _player?.playing ?? false);
+    _scheduleTrackRecovery(this);
   }
 
   /// Loads the 听书 → 正文 mapping for a chapter and publishes it if the
@@ -947,15 +958,17 @@ class _AudioPlaybackController extends ChangeNotifier
     Future<void> cancel,
   ) async {
     var track = AudioTimeTrack.empty;
+    var recoverableFailure = false;
     for (var attempt = 0; attempt < _trackRetryAttempts; attempt++) {
       if (!_current(generation)) return;
       try {
         track = await _loadTimePoints(itemId, toneId, cancel: cancel);
         break;
       } catch (error) {
-        if (!_current(generation) ||
-            !_isTransientTrackFailure(error) ||
-            attempt + 1 == _trackRetryAttempts) {
+        if (!_current(generation)) return;
+        if (!_isTransientTrackFailure(error)) break;
+        if (attempt + 1 == _trackRetryAttempts) {
+          recoverableFailure = true;
           break;
         }
         await _waitForTrackRetry(cancel, attempt);
@@ -964,10 +977,12 @@ class _AudioPlaybackController extends ChangeNotifier
     if (!_current(generation)) return;
     // Publish track, readiness and the novel chapter alias as one snapshot only
     // after success or the finite retry budget is exhausted.
+    _timeTrackRecoveryPending = recoverableFailure;
     _timeTrack = track;
     _timeTrackReady = true;
     _publishReadAlong();
     _publishListeningSession(playing: _player?.playing ?? false);
+    _scheduleTrackRecovery(this);
   }
 
   void _publishReadAlong() {
@@ -1190,8 +1205,10 @@ class _AudioPlaybackController extends ChangeNotifier
         !player.buffering) {
       _listenTime.start();
       _prefetchNextAudioChapter();
+      _scheduleTrackRecovery(this);
     } else {
       _listenTime.stop();
+      _cancelTrackRecovery(this);
     }
   }
 
@@ -1263,6 +1280,7 @@ class _AudioPlaybackController extends ChangeNotifier
   void _fail(Object error, int generation) {
     if (!_current(generation)) return;
     _cancelAdvanceCountdown(this);
+    _resetTrackRecovery(this);
     _cancelTrackRequests();
     ListeningSession.instance.clear();
     unawaited(NativePlayer.stopListenForeground(owner: _mediaOwner));
@@ -1306,6 +1324,7 @@ class _AudioPlaybackController extends ChangeNotifier
 
   Future<void> _pause(NativePlayer player, int generation) async {
     _cancelAdvanceCountdown(this);
+    _cancelTrackRecovery(this);
     _publishListeningSession(playing: false);
     try {
       await player.pause();
@@ -1510,6 +1529,7 @@ class _AudioPlaybackController extends ChangeNotifier
       completed: _completed,
       autoplay: _wantPlay,
     );
+    _cancelTrackRecovery(this);
     _update(() => _wantPlay = false);
     _publishListeningSession(playing: false);
     final suspendedGeneration = ++_generation;
@@ -1558,6 +1578,7 @@ class _AudioPlaybackController extends ChangeNotifier
       await _persistProgress();
       if (!_current(generation)) return;
       generation = ++_generation;
+      _resetTrackRecovery(this);
       _cancelTrackRequests();
       ++_seekGeneration;
       _saveTimer?.cancel();
@@ -1656,6 +1677,7 @@ class _AudioPlaybackController extends ChangeNotifier
     if (_closed) return;
     _closed = true;
     _cancelAdvanceCountdown(this);
+    _resetTrackRecovery(this);
     _unregisterFairMemoryFlush?.call();
     _unregisterFairMemoryFlush = null;
     ++_generation;

@@ -8,6 +8,7 @@ import 'package:fqapp/models/chapter_media.dart';
 import 'package:fqapp/models/media_item.dart';
 import 'package:fqapp/pages/audio_page.dart';
 import 'package:fqapp/pages/reader_page.dart';
+import 'package:fqapp/services/api_client.dart';
 import 'package:fqapp/services/audio_page_theme.dart';
 import 'package:fqapp/services/audio_preferences.dart';
 import 'package:fqapp/services/chapter_text_formatter.dart';
@@ -175,14 +176,42 @@ void main() {
   testWidgets('the card opens the novel reader on the mapped chapter', (
     tester,
   ) async {
-    final session = _ListenAlongSession(timeTrack: _crossChapterTimeTrack);
+    var timePointAttempts = 0;
+    final session = _ListenAlongSession(
+      timeTrack: _crossChapterTimeTrack,
+      timePointLoader: (_, _) async {
+        if (++timePointAttempts <= 3) {
+          throw const ApiException('temporary', statusCode: 503);
+        }
+        return _crossChapterTimeTrack;
+      },
+    );
     await _mount(tester, session);
+    for (var i = 0; i < 4 && timePointAttempts < 3; i++) {
+      await tester.pump(const Duration(milliseconds: 700));
+      await _flush(tester);
+    }
 
-    // 控制器的会话别名已经带上原著 id，阅读页才能继续匹配播放状态。
+    final card = find.byKey(const Key('audio_real_read_along'));
+    expect(timePointAttempts, 3);
+    expect(
+      tester
+          .widget<AudioRealListenAlong>(find.byType(AudioRealListenAlong))
+          .onTap,
+      isNull,
+    );
+
+    // 初次有限重试耗尽后仍要在同一音频章低频恢复；一次恢复发布不能重新
+    // 打开用户手动关闭的跟随。
+    ListeningSession.instance.setFollowArmed(false);
+    await tester.pump(const Duration(seconds: 30));
+    await _flush(tester);
+    expect(timePointAttempts, 4);
+
+    // 控制器的恢复快照带上原著 id，阅读页才能继续匹配播放状态。
     expect(ListeningSession.instance.matchesBook(_novelBook), isTrue);
     expect(ListeningSession.instance.matchesChapter(_novelChapter), isTrue);
 
-    final card = find.byKey(const Key('audio_real_read_along'));
     expect(find.text(_novelChapterTitle), findsOneWidget);
 
     // 同一条音频时间轴跨进原著第 2 章后，ReadAlong 卡片和会话别名都要跟着
@@ -330,10 +359,15 @@ ChapterContent _chapterContent() => ChapterContent(
 class _ListenAlongSession {
   final bool withNovel;
   final AudioTimeTrack timeTrack;
+  final TimePointLoader? timePointLoader;
   final List<String> directoryRequests = [];
   final List<_AudioPlayer> players = [];
 
-  _ListenAlongSession({this.withNovel = true, this.timeTrack = _timeTrack});
+  _ListenAlongSession({
+    this.withNovel = true,
+    this.timeTrack = _timeTrack,
+    this.timePointLoader,
+  });
 
   Widget app() => MaterialApp(
     home: AudioPage(
@@ -350,7 +384,7 @@ class _ListenAlongSession {
       ),
       voicesLoader: () async => const [],
       subtitleLoader: (_, _) async => _subtitleTrack,
-      timePointLoader: (_, _) async => timeTrack,
+      timePointLoader: timePointLoader ?? (_, _) async => timeTrack,
       contentLoader: (_) async => _chapterContent(),
       directoryLoader: (bookId) async {
         directoryRequests.add(bookId);

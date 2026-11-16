@@ -48,6 +48,7 @@ class _UgcStoryFeedState extends ConsumerState<UgcStoryFeed> {
   bool _loadMoreCheckScheduled = false;
   int _automaticEmptyLoads = 0;
   int _activationRevision = 0;
+  int _loadMoreRevision = 0;
   BackendRequest? _detailRequest;
 
   @override
@@ -90,7 +91,7 @@ class _UgcStoryFeedState extends ConsumerState<UgcStoryFeed> {
     if (!controller.hasClients) return;
     final position = controller.position;
     if (position.pixels >= position.maxScrollExtent - 600) {
-      _maybeLoadMore();
+      unawaited(_maybeLoadMore());
     }
   }
 
@@ -99,12 +100,12 @@ class _UgcStoryFeedState extends ConsumerState<UgcStoryFeed> {
     _loadMoreCheckScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadMoreCheckScheduled = false;
-      if (mounted) _maybeLoadMore();
+      if (mounted) unawaited(_maybeLoadMore());
     });
   }
 
-  void _maybeLoadMore() {
-    if (!widget.active) return;
+  Future<void> _maybeLoadMore() async {
+    if (!widget.active || _automaticEmptyLoads >= 3) return;
     final state = ref.read(ugcStoriesProvider);
     if (state.isLoading ||
         state.isLoadMore ||
@@ -112,32 +113,49 @@ class _UgcStoryFeedState extends ConsumerState<UgcStoryFeed> {
         state.error != null) {
       return;
     }
-    if (state.items.isNotEmpty) {
-      _automaticEmptyLoads = 0;
-    } else if (_automaticEmptyLoads >= 3) {
-      return;
-    } else {
-      _automaticEmptyLoads++;
-    }
     final controller = widget.scrollController;
     if (!controller.hasClients ||
         controller.position.pixels >=
             controller.position.maxScrollExtent - 600) {
-      unawaited(_stories.loadMore());
+      final revision = _activationRevision;
+      final loadMoreRevision = _loadMoreRevision;
+      final itemCount = state.items.length;
+      await _stories.loadMore();
+      if (!mounted ||
+          !widget.active ||
+          revision != _activationRevision ||
+          loadMoreRevision != _loadMoreRevision) {
+        return;
+      }
+      final current = ref.read(ugcStoriesProvider);
+      if (current.error != null || current.isLoading || current.isLoadMore) {
+        return;
+      }
+      final emptyLoads = current.items.length > itemCount
+          ? 0
+          : current.hasMore
+          ? _automaticEmptyLoads + 1
+          : 0;
+      if (emptyLoads != _automaticEmptyLoads) {
+        setState(() => _automaticEmptyLoads = emptyLoads);
+      }
     }
   }
 
   Future<void> _refresh() {
+    _loadMoreRevision++;
     _automaticEmptyLoads = 0;
     return _stories.refresh();
   }
 
   Future<void> _retry() {
+    _loadMoreRevision++;
     _automaticEmptyLoads = 0;
     return _stories.retry();
   }
 
   Future<void> _continueEmptyLoadMore() {
+    _loadMoreRevision++;
     _automaticEmptyLoads = 0;
     return _stories.loadMore();
   }
@@ -148,12 +166,13 @@ class _UgcStoryFeedState extends ConsumerState<UgcStoryFeed> {
       if (!mounted || !widget.active || revision != _activationRevision) return;
       _stories.cancelInFlight();
       unawaited(_stories.load());
-      _maybeLoadMore();
+      unawaited(_maybeLoadMore());
     });
   }
 
   void _deactivate() {
     final revision = ++_activationRevision;
+    _loadMoreRevision++;
     final detailRequest = _detailRequest;
     _detailRequest = null;
     detailRequest?.cancel();
@@ -385,13 +404,13 @@ class _UgcStoryFeedState extends ConsumerState<UgcStoryFeed> {
                 headline: '短篇还在路上',
                 message: '暂时无法加载短篇，稍后再试一次。',
                 detail: state.error!,
-                onRetry: _refresh,
+                onRetry: _retry,
               )
             : HomeFeedError(
                 headline: '短篇还在路上',
                 message: '暂时无法加载短篇，稍后再试一次。',
                 detail: state.error!,
-                onRetry: _refresh,
+                onRetry: _retry,
               );
       } else {
         final canContinue = state.hasMore;
@@ -443,6 +462,20 @@ class _UgcStoryFeedState extends ConsumerState<UgcStoryFeed> {
   }
 
   Widget _footer(UgcStoryState state, bool classic) {
+    if (!state.isLoading &&
+        !state.isLoadMore &&
+        state.error == null &&
+        state.hasMore &&
+        _automaticEmptyLoads >= 3) {
+      return SliverToBoxAdapter(
+        child: Center(
+          child: TextButton(
+            onPressed: _continueEmptyLoadMore,
+            child: const Text('继续加载短篇'),
+          ),
+        ),
+      );
+    }
     if (classic) {
       if (state.isLoadMore) {
         return const SliverToBoxAdapter(
