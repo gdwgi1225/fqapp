@@ -280,6 +280,20 @@ class _ReaderBookNotesState extends State<ReaderBookNotes> {
                       label: Text(filter.label),
                       selected: _filter == filter,
                       materialTapTargetSize: MaterialTapTargetSize.padded,
+                      // 显式按阅读预设传色，不依赖继承的 chipTheme：深色软件 +
+                      // 浅色阅读时 M3 ChoiceChip 选中背景读
+                      // chipTheme.secondarySelectedColor，一旦 preset.theme 多层嵌套或
+                      // 静态 _themeCache 命中改动前的旧主题，该字段就会退回 base 深色值，
+                      // 选中态糊成纯黑。widget 级 selectedColor / backgroundColor 优先级
+                      // 最高且随 build 更新，热重载也不会被旧 ThemeData 缓存卡住
+                      // （与 reader_full_search_panel 排序 chip 同款做法）。
+                      selectedColor: preset.accentColor.withValues(alpha: .12),
+                      backgroundColor: preset.fieldColor,
+                      labelStyle: TextStyle(
+                        color: _filter == filter
+                            ? preset.accentColor
+                            : preset.textColor,
+                      ),
                       onSelected: (_) => setState(() => _filter = filter),
                     ),
                 ],
