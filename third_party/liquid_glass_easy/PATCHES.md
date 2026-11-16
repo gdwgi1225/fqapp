@@ -1,5 +1,17 @@
 # Wenku8 performance patch
 
+## 2026-11-16 — Windows shader multi-return guard
+
+`lib/assets/shaders/liquid_glass.frag`, `liquid_glass_border.frag` and
+`metaball_glass.frag` moved their entry points into helper functions that
+return the final colour, so `main()` now contains one `frag_color` assignment
+and no `return` statement. Flutter's Windows shader compiler warns (and can
+fail) when `main()` mixes texture samplers with multiple early returns; the
+guard branches return `vec4(0.0)` or the composite from the helper instead.
+The helper bodies keep the exact same uniforms, branches, sampling and
+premultiplied overlay math, so rendered pixels and the uniform layout are
+unchanged.
+
 ## 2026-10-26 — Specialize mathematically absent optics
 
 The Impeller lens selects `liquid_glass_unlit.frag` only for circular rounded
