@@ -107,6 +107,7 @@ class _MinePageState extends State<MinePage> {
       badge: '',
       ep: '',
       kind: '${entry['kind'] ?? 'book'}',
+      source: historySource(entry),
       seriesId: entry['seriesId']?.toString(),
       episodeId: entry['episodeId']?.toString(),
     ),

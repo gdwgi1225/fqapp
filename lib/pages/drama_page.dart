@@ -5029,11 +5029,12 @@ class _LocalListState extends State<_LocalList> {
   /// 官方删除要按**记录身份**（kind + contentId），不能用下标。
   String _keyOf(MediaItem item) => '${item.kind}:${item.id}';
 
-  List<({String contentId, String kind})> get _targets => [
+  List<({String contentId, String kind, String source})> get _targets => [
     for (final entry in _historyEntries())
       (
         contentId: historyContentId(entry),
         kind: entry['kind']?.toString() ?? 'video',
+        source: historySource(entry),
       ),
   ];
 

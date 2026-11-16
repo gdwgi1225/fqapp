@@ -160,11 +160,16 @@ void main() {
   });
 
   testWidgets(
-    'cached opening restores raw Shuqi shelf identity and drops history',
+    'cached opening saves and restores scoped Shuqi history without Fanqie leakage',
     (tester) async {
       final cache = await _cache();
-      final history = _CountingHistory()
-        ..entry = {'id': '34078', 'kind': 'book', 'chapterId': '20'};
+      final history = _CountingHistory();
+      history.entries['34078'] = {
+        'id': '34078',
+        'kind': 'book',
+        'chapterId': '20',
+        'title': '同号番茄书',
+      };
       bool? opened;
       await tester.pumpWidget(
         MaterialApp(
@@ -193,9 +198,15 @@ void main() {
       expect(reader.shelfItem!.id, '34078');
       expect(reader.shelfItem!.source, shuqiSourceId);
       expect(reader.shelfItem!.kind, 'book');
-      expect(reader.readerStore, isA<ReadOnlyReaderStore>());
-      expect(history.reads, 0);
-      expect(history.entry!['id'], '34078');
+      expect(reader.readerStore, same(history));
+      expect(history.readIds, isNotEmpty);
+      expect(history.readIds, everyElement('shuqi:34078'));
+      expect(history.entries['34078']!['chapterId'], '20');
+      expect(history.entries['shuqi:34078']!['id'], 'shuqi:34078');
+      expect(history.entries['shuqi:34078']!['bookId'], 'shuqi:34078');
+      expect(history.entries['shuqi:34078']!['contentId'], '34078');
+      expect(history.entries['shuqi:34078']!['source'], shuqiSourceId);
+      expect(history.entries['shuqi:34078']!['chapterId'], '10');
       expect(history.seconds, 0);
       // This offline entry never falls back to Fanqie on a missing chapter.
       await expectLater(
@@ -208,53 +219,111 @@ void main() {
           ),
         ),
       );
-      await reader.readerStore!.addHistory({'id': _book.id, 'kind': 'book'});
-      await reader.readerStore!.updateProgress(_book.id, 1, 0.5);
-      await reader.readerStore!.accumulateReadTime(_book.id, 'book', 60);
-      expect(await reader.readerStore!.historyEntry(_book.id), isNull);
-      expect(history.entry!['chapterId'], '20');
+      Navigator.of(tester.element(find.byType(ReaderPage))).pop();
+      await tester.pumpAndSettle();
+      expect(opened, isTrue);
+
+      await cache.write(
+        bookId: _book.id,
+        chapterId: _second.itemId,
+        title: _second.title,
+        text: ChapterContent.fromPlainText('第二章\n书旗缓存正文').toCacheText(),
+      );
+      history.entries['shuqi:34078'] = {
+        ...history.entries['shuqi:34078']!,
+        'chapterId': '20',
+        'episode': 1,
+      };
+      opened = null;
+      await tester.tap(find.text('打开缓存'));
+      await tester.pumpAndSettle();
+      final restored = tester.widget<ReaderPage>(find.byType(ReaderPage));
+      expect(restored.bookId, 'shuqi:34078');
+      expect(restored.startIndex, 1);
+      expect(restored.readerStore, same(history));
+      expect(history.entries['34078']!['chapterId'], '20');
+      expect(history.seconds, 0);
       Navigator.of(tester.element(find.byType(ReaderPage))).pop();
       await tester.pumpAndSettle();
       expect(opened, isTrue);
     },
   );
 
-  testWidgets('recent Shuqi opening never reads a same-ID Fanqie history', (
-    tester,
-  ) async {
-    final history = _CountingHistory()
-      ..entry = {'id': '34078', 'kind': 'book', 'chapterId': '10'};
-    final cache = await _cache();
-    var directoryCalls = 0;
-    bool? opened;
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Builder(
-          builder: (context) => TextButton(
-            onPressed: () async {
-              opened = await openRecentBook(
-                context,
-                _item,
-                cache: cache.memory,
-                readerStore: history,
-                directoryLoader: (_) async {
-                  directoryCalls++;
-                  return [_first];
-                },
-              );
-            },
-            child: const Text('最近阅读'),
+  testWidgets(
+    'recent Shuqi opening requires scoped history and refreshes with scoped ID',
+    (tester) async {
+      final history = _CountingHistory();
+      history.entries['34078'] = {
+        'id': '34078',
+        'kind': 'book',
+        'chapterId': '10',
+        'title': '同号番茄书',
+      };
+      final cache = await _cache();
+      final directoryIds = <String>[];
+      bool? opened;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) => TextButton(
+              onPressed: () async {
+                opened = await openRecentBook(
+                  context,
+                  _item,
+                  cache: cache.memory,
+                  readerStore: history,
+                  directoryLoader: (id) async {
+                    directoryIds.add(id);
+                    return [_first, _second];
+                  },
+                );
+              },
+              child: const Text('最近阅读'),
+            ),
           ),
         ),
-      ),
-    );
-    await tester.tap(find.text('最近阅读'));
-    await tester.pumpAndSettle();
-    expect(opened, isFalse);
-    expect(history.reads, 0);
-    expect(directoryCalls, 0);
-    expect(find.byType(ReaderPage), findsNothing);
-  });
+      );
+      await tester.tap(find.text('最近阅读'));
+      await tester.pumpAndSettle();
+      expect(opened, isFalse);
+      expect(history.readIds, ['shuqi:34078']);
+      expect(history.entries['34078']!['chapterId'], '10');
+      expect(history.entries.containsKey('shuqi:34078'), isFalse);
+      expect(directoryIds, isEmpty);
+      expect(find.byType(ReaderPage), findsNothing);
+
+      await cache.write(
+        bookId: _book.id,
+        chapterId: _second.itemId,
+        title: _second.title,
+        text: ChapterContent.fromPlainText('第二章\n书旗缓存正文').toCacheText(),
+      );
+      history.entries['shuqi:34078'] = {
+        'id': 'shuqi:34078',
+        'bookId': 'shuqi:34078',
+        'contentId': '34078',
+        'source': shuqiSourceId,
+        'kind': 'book',
+        'chapterId': '20',
+        'title': '书旗缓存书',
+      };
+      await tester.tap(find.text('最近阅读'));
+      await tester.pumpAndSettle();
+      final reader = tester.widget<ReaderPage>(find.byType(ReaderPage));
+      expect(reader.bookId, 'shuqi:34078');
+      expect(reader.startIndex, 1);
+      expect(reader.shelfItem!.id, '34078');
+      expect(reader.shelfItem!.source, shuqiSourceId);
+      expect(history.readIds, isNotEmpty);
+      expect(history.readIds, everyElement('shuqi:34078'));
+      expect(history.entries['34078']!['chapterId'], '10');
+      expect(history.seconds, 0);
+      expect(directoryIds, ['shuqi:34078']);
+      Navigator.of(tester.element(find.byType(ReaderPage))).pop();
+      await tester.pumpAndSettle();
+      expect(opened, isTrue);
+    },
+  );
 
   for (final style in AppThemeStyle.values) {
     testWidgets(
@@ -413,11 +482,41 @@ void main() {
 
 class _CountingHistory extends MemoryReaderStore {
   int reads = 0;
+  final readIds = <String>[];
+  final entries = <String, Map<String, dynamic>>{};
 
   @override
-  Future<Map<String, dynamic>?> historyEntry(String id) {
+  Future<Map<String, dynamic>?> historyEntry(String id) async {
     reads++;
-    return super.historyEntry(id);
+    readIds.add(id);
+    final value = entries[id];
+    return value == null ? null : Map<String, dynamic>.from(value);
+  }
+
+  @override
+  Future<void> addHistory(Map<String, dynamic> value) async {
+    final id = value['id']?.toString() ?? '';
+    if (id.isNotEmpty) entries[id] = Map<String, dynamic>.from(value);
+  }
+
+  @override
+  Future<void> updateProgress(
+    String id,
+    int episode,
+    double progress, {
+    String? chapterId,
+    double? position,
+    double? maxScroll,
+  }) async {
+    entries[id] = {
+      ...?entries[id],
+      'id': id,
+      'episode': episode,
+      'progress': progress,
+      'chapterId': ?chapterId,
+      'position': ?position,
+      'maxScroll': ?maxScroll,
+    };
   }
 }
 

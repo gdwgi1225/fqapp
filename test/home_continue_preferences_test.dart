@@ -10,7 +10,7 @@ void main() {
     HomeContinuePreferences.instance.resetForTest();
   });
 
-  MediaItem book(String id) => MediaItem(
+  MediaItem book(String id, {String source = 'fanqie'}) => MediaItem(
     id: id,
     title: '书',
     cover: '',
@@ -18,6 +18,7 @@ void main() {
     badge: '',
     ep: '',
     kind: 'book',
+    source: source,
   );
 
   test('关闭只对那一本生效，换书后这一行会重新出现', () async {
@@ -28,6 +29,7 @@ void main() {
     await prefs.dismiss(book('b1'));
     expect(prefs.isDismissed(book('b1')), isTrue);
     expect(prefs.isDismissed(book('b2')), isFalse);
+    expect(prefs.isDismissed(book('b1', source: 'shuqi')), isFalse);
   });
 
   test('关闭记在 SharedPreferences 里，重启后仍然关着', () async {

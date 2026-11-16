@@ -216,14 +216,21 @@ void main() {
   });
 
   test(
-    'audio and manga progress remain separate from a novel with the same ID',
+    'history kind and source remain separate with the same content ID',
     () async {
       await store.init();
+      expect(historyStorageKeyFor('shared', 'book'), 'shared');
+      expect(historyStorageKeyFor('shared', 'audio'), 'audio:shared');
+      expect(
+        historyStorageKeyFor('shared', 'book', source: 'shuqi'),
+        'shuqi:shared',
+      );
       final audio = scopedHistoryStore(store, 'audio');
       final manga = scopedHistoryStore(store, 'manga');
       await store.addHistory({
         'id': 'shared',
         'kind': 'book',
+        'source': 'fanqie',
         'position': 450.0,
         'time': 1,
       });
@@ -249,6 +256,15 @@ void main() {
         position: 4.5,
         maxScroll: 9,
       );
+      await store.addHistory({
+        'id': 'shuqi:shared',
+        'bookId': 'shuqi:shared',
+        'contentId': 'shared',
+        'kind': 'book',
+        'source': 'shuqi',
+        'position': 7.5,
+        'time': 4,
+      });
       expect((await store.historyEntry('shared'))?['position'], 450.0);
       expect((await audio.historyEntry('shared'))?['position'], 12.5);
       expect((await manga.historyEntry('shared'))?['position'], 4.5);
@@ -257,7 +273,8 @@ void main() {
         'comic-page',
       );
       expect((await audio.historyEntry('shared'))?['id'], 'shared');
-      expect(store.historySnapshot(), hasLength(3));
+      expect((await store.historyEntry('shuqi:shared'))?['position'], 7.5);
+      expect(store.historySnapshot(), hasLength(4));
       for (final entry in store.historySnapshot()) {
         expect(historyContentId(entry), 'shared');
       }
@@ -265,6 +282,10 @@ void main() {
         (entry) => entry['kind'] == 'audio',
       );
       expect(historyStatisticsId(audioEntry), 'audio:shared');
+      final shuqiEntry = store.historySnapshot().firstWhere(
+        (entry) => entry['source'] == 'shuqi',
+      );
+      expect(historyStatisticsId(shuqiEntry), 'shuqi:shared');
 
       final today = DateTime(2026, 9, 8);
       await store.accumulateReadTime('shared', 'book', 20, at: today);
@@ -360,6 +381,15 @@ void main() {
       });
       await store.accumulateReadTime('shared', 'audio', 60, at: today);
       await store.addHistory({
+        'id': 'shuqi:shared',
+        'bookId': 'shuqi:shared',
+        'contentId': 'shared',
+        'source': 'shuqi',
+        'kind': 'book',
+        'chapterId': 'shuqi-chapter',
+      });
+      expect(await store.historyEntry('audio:shared'), isNull);
+      await store.addHistory({
         'id': 'shared',
         'kind': 'book',
         'chapterId': 'book-chapter',
@@ -374,10 +404,14 @@ void main() {
       );
       expect((await store.historyEntry('shared'))?['position'], 800.0);
       await audio.accumulateReadTime('shared', 'audio', 10, at: today);
-      expect(store.historySnapshot(), hasLength(2));
+      expect(store.historySnapshot(), hasLength(3));
       expect(store.historySnapshot().map((entry) => entry['kind']).toSet(), {
         'book',
         'audio',
+      });
+      expect(store.historySnapshot().map(historySource).toSet(), {
+        'fanqie',
+        'shuqi',
       });
       expect(store.readTimeSnapshot(), {
         'shared': {'2026-9-8': 20.0},

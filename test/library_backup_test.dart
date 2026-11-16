@@ -146,48 +146,112 @@ void main() {
     },
   );
 
-  test('source and card metadata survive a round-trip', () async {
-    final backup = LibraryBackup.capture(
-      shelf: [
-        ShelfRecord(
-          item: _item('123', title: '番茄书'),
-          addedAt: DateTime(2020),
-        ),
-        ShelfRecord(
-          item: _item(
-            '123',
-            title: '书旗书',
-            source: 'shuqi',
-            intro: '简介',
-            categories: const ['玄幻', '热血'],
-            creationStatus: 0,
-            wordNumber: 123456,
+  test(
+    'source metadata and qualified history use a schema-v3 round-trip',
+    () async {
+      final backup = LibraryBackup.capture(
+        shelf: [
+          ShelfRecord(
+            item: _item('123', title: '番茄书'),
+            addedAt: DateTime(2020),
           ),
-          addedAt: DateTime(2021),
-        ),
-      ],
-      history: [],
-      watched: {},
-    );
-    final restored = LibraryBackup.decode(backup.encode());
-    expect(restored.shelf, hasLength(2));
-    final fanqie = restored.shelf.singleWhere((e) => e.item.source == 'fanqie');
-    final shuqi = restored.shelf.singleWhere((e) => e.item.source == 'shuqi');
-    expect(fanqie.item.title, '番茄书');
-    expect(shuqi.item.title, '书旗书');
-    expect(shuqi.item.intro, '简介');
-    expect(shuqi.item.categories, ['玄幻', '热血']);
-    expect(shuqi.item.creationStatus, 0);
-    expect(shuqi.item.wordNumber, 123456);
-    // Same numeric id, distinct source-qualified identities.
-    expect(ShelfStore.keyOf(fanqie.item), 'shelf_v1:book:123');
-    expect(ShelfStore.keyOf(shuqi.item), 'shelf_v1:shuqi/book:123');
+          ShelfRecord(
+            item: _item(
+              '123',
+              title: '书旗书',
+              source: 'shuqi',
+              intro: '简介',
+              categories: const ['玄幻', '热血'],
+              creationStatus: 0,
+              wordNumber: 123456,
+            ),
+            addedAt: DateTime(2021),
+          ),
+        ],
+        history: [
+          {
+            'id': '123',
+            'bookId': '123',
+            'kind': 'book',
+            'chapterId': 'fanqie-chapter',
+            'chapterCount': 10,
+            'episode': 4,
+            'progress': 0.4,
+            'time': 100,
+          },
+          {
+            'id': 'shuqi:123',
+            'bookId': 'shuqi:123',
+            'contentId': '123',
+            'source': 'shuqi',
+            'kind': 'book',
+            'chapterId': 'shuqi-chapter',
+            'chapterCount': 20,
+            'episode': 8,
+            'progress': 0.4,
+            'time': 200,
+          },
+        ],
+        watched: {},
+      );
+      final encoded = backup.encode();
+      final portable = jsonDecode(utf8.decode(encoded)) as Map<String, dynamic>;
+      expect(portable['version'], 3);
+      for (final legacyVersion in [1, 2]) {
+        final legacy = Map<String, dynamic>.from(portable)
+          ..['version'] = legacyVersion;
+        if (legacyVersion == 2) legacy['ai'] = 'valid-ai';
+        expect(
+          () => LibraryBackup.decode(
+            Uint8List.fromList(utf8.encode(jsonEncode(legacy))),
+          ),
+          throwsFormatException,
+        );
+      }
+      final restored = LibraryBackup.decode(encoded);
+      expect(restored.shelf, hasLength(2));
+      final fanqie = restored.shelf.singleWhere(
+        (e) => e.item.source == 'fanqie',
+      );
+      final shuqi = restored.shelf.singleWhere((e) => e.item.source == 'shuqi');
+      expect(fanqie.item.title, '番茄书');
+      expect(shuqi.item.title, '书旗书');
+      expect(shuqi.item.intro, '简介');
+      expect(shuqi.item.categories, ['玄幻', '热血']);
+      expect(shuqi.item.creationStatus, 0);
+      expect(shuqi.item.wordNumber, 123456);
+      // Same numeric id, distinct source-qualified identities.
+      expect(ShelfStore.keyOf(fanqie.item), 'shelf_v1:book:123');
+      expect(ShelfStore.keyOf(shuqi.item), 'shelf_v1:shuqi/book:123');
+      expect(restored.history, hasLength(2));
+      final fanqieHistory = restored.history.singleWhere(
+        (entry) => entry['source'] != 'shuqi',
+      );
+      final shuqiHistory = restored.history.singleWhere(
+        (entry) => entry['source'] == 'shuqi',
+      );
+      expect(fanqieHistory['id'], '123');
+      expect(fanqieHistory['chapterId'], 'fanqie-chapter');
+      expect(shuqiHistory['id'], '123');
+      expect(shuqiHistory['bookId'], '123');
+      expect(shuqiHistory['chapterId'], 'shuqi-chapter');
+      expect(shuqiHistory, isNot(contains('contentId')));
 
-    await LibraryBackupService().restore(restored);
-    expect(shelf.records(), hasLength(2));
-    expect(shelf.contains('book', '123'), isTrue);
-    expect(shelf.contains('book', '123', source: 'shuqi'), isTrue);
-  });
+      await LibraryBackupService().restore(restored);
+      expect(shelf.records(), hasLength(2));
+      expect(shelf.contains('book', '123'), isTrue);
+      expect(shelf.contains('book', '123', source: 'shuqi'), isTrue);
+      expect(
+        (await library.historyEntry('123'))?['chapterId'],
+        'fanqie-chapter',
+      );
+      final runtimeShuqi = await library.historyEntry('shuqi:123');
+      expect(runtimeShuqi?['chapterId'], 'shuqi-chapter');
+      expect(runtimeShuqi?['bookId'], 'shuqi:123');
+      expect(runtimeShuqi?['contentId'], '123');
+      expect(runtimeShuqi?['source'], 'shuqi');
+    },
+  );
 
   test(
     'file validation rejects malformed final records before any writes',
@@ -215,6 +279,25 @@ void main() {
         throwsFormatException,
       );
       expect(library.historySnapshot(), isEmpty);
+      json['history'] = [
+        {'id': 'valid', 'kind': 'book', 'source': 'other'},
+      ];
+      expect(
+        () => LibraryBackup.decode(
+          Uint8List.fromList(utf8.encode(jsonEncode(json))),
+        ),
+        throwsFormatException,
+      );
+      json['version'] = 3;
+      json['history'] = [
+        {'id': 'not-a-book-id', 'kind': 'book', 'source': 'shuqi'},
+      ];
+      expect(
+        () => LibraryBackup.decode(
+          Uint8List.fromList(utf8.encode(jsonEncode(json))),
+        ),
+        throwsFormatException,
+      );
       json['history'] = [
         {'id': 'local_100_abcd', 'kind': 'book'},
       ];

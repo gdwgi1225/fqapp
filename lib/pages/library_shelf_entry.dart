@@ -86,6 +86,7 @@ class _ShelfEntry implements ShelfProjectable {
       badge: '',
       ep: history['ep']?.toString() ?? '',
       kind: history['kind']?.toString() ?? 'book',
+      source: historySource(history),
       seriesId: history['seriesId']?.toString(),
       episodeId: history['episodeId']?.toString(),
     );

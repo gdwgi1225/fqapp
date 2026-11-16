@@ -376,7 +376,7 @@ class WebDavSyncService with WidgetsBindingObserver {
   }
 
   static String _historyKey(Map<String, dynamic> record) =>
-      '${record['kind'] ?? 'book'}:${record['contentId'] ?? record['id']}';
+      LibraryBackup.historyIdentity(record);
 
   // Reading cloud data must not first serialize/validate unrelated local fields.
   // Only identities are needed to detect deletes and protect concurrent edits.

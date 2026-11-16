@@ -24,11 +24,26 @@ void main() {
       Hive.init(dir.path);
       await store.init();
       await store.clearHistory();
-      await store.addHistory({'id': 'a', 'kind': 'video', 'title': 'A'});
-      await store.addHistory({'id': 'b', 'kind': 'manju', 'title': 'B'});
-      await store.addHistory({'id': 'c', 'kind': 'video', 'title': 'C'});
+      await store.addHistory({
+        'id': 'a',
+        'kind': 'video',
+        'source': 'fanqie',
+        'title': 'A',
+      });
+      await store.addHistory({
+        'id': 'b',
+        'kind': 'manju',
+        'source': 'fanqie',
+        'title': 'B',
+      });
+      await store.addHistory({
+        'id': 'c',
+        'kind': 'video',
+        'source': 'fanqie',
+        'title': 'C',
+      });
       final removed = await store.removeHistoryEntries([
-        (contentId: 'a', kind: 'video'),
+        (contentId: 'a', kind: 'video', source: 'fanqie'),
       ]);
       expect(removed, greaterThan(0));
       expect(store.historyEntry('a'), completion(isNull));
@@ -37,7 +52,7 @@ void main() {
       expect((await store.historyEntry('c'))?['title'], 'C');
     });
 
-    test('kind is part of the identity', () async {
+    test('kind and source are part of the identity', () async {
       SharedPreferences.setMockInitialValues({});
       final store = LibraryStore.instance;
       final dir = await _tempDir('fqapp-recent-delete-kind');
@@ -45,18 +60,46 @@ void main() {
       await store.init();
       await store.clearHistory();
       // 真实路径是作用域 store（同一条作品可能有 video/manju 两个作用域）。
-      await scopedHistoryStore(
-        store,
-        'video',
-      ).addHistory({'id': 'x', 'kind': 'video', 'title': 'V'});
-      await scopedHistoryStore(
-        store,
-        'manju',
-      ).addHistory({'id': 'x', 'kind': 'manju', 'title': 'M'});
-      await store.removeHistoryEntries([(contentId: 'x', kind: 'manju')]);
-      final remaining = store.historySnapshot();
-      expect(remaining.length, 1);
-      expect(remaining.first['title'], 'V');
+      await scopedHistoryStore(store, 'video').addHistory({
+        'id': 'x',
+        'kind': 'video',
+        'source': 'fanqie',
+        'title': 'V',
+      });
+      await scopedHistoryStore(store, 'manju').addHistory({
+        'id': 'x',
+        'kind': 'manju',
+        'source': 'fanqie',
+        'title': 'M',
+      });
+      await store.addHistory({
+        'id': 'x',
+        'kind': 'book',
+        'source': 'fanqie',
+        'title': 'F',
+      });
+      await store.addHistory({
+        'id': 'shuqi:x',
+        'bookId': 'shuqi:x',
+        'contentId': 'x',
+        'kind': 'book',
+        'source': 'shuqi',
+        'title': 'S',
+      });
+      await store.removeHistoryEntries([
+        (contentId: 'x', kind: 'manju', source: 'fanqie'),
+      ]);
+      var remaining = store.historySnapshot();
+      expect(remaining.length, 3);
+      expect(
+        remaining.map((entry) => entry['title']),
+        containsAll(['V', 'F', 'S']),
+      );
+
+      await store.removeHistoryEntry('x', 'book', source: 'shuqi');
+      remaining = store.historySnapshot();
+      expect(remaining.length, 2);
+      expect(remaining.map((entry) => entry['title']), containsAll(['V', 'F']));
     });
 
     test('a missing record reports zero removals', () async {

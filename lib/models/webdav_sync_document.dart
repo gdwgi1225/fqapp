@@ -108,7 +108,7 @@ class WebDavSyncDocument {
     }
     final history = <String, Map<String, dynamic>>{};
     for (final record in [...backup.history, ...other.backup.history]) {
-      final key = '${record['kind']}:${record['id']}';
+      final key = LibraryBackup.historyIdentity(record);
       final previous = history[key];
       final time = (record['time'] as int?) ?? 0;
       final oldTime = (previous?['time'] as int?) ?? 0;

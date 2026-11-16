@@ -512,6 +512,7 @@ mixin _LibraryPageStateBase on State<LibraryPage>, WidgetsBindingObserver {
         ShelfIdentity.contentKeyFor(
           entry['kind']?.toString() ?? 'book',
           historyContentId(entry),
+          source: historySource(entry),
         ): entry,
     };
     setState(() {

@@ -3,8 +3,9 @@ import '../models/shuqi_book.dart';
 import 'api_client.dart';
 import 'library_store.dart';
 
-/// The cache keeps the source in its ID; the shelf keeps the original book ID.
-String shuqiReaderId(String bookId) => 'shuqi:$bookId';
+/// Cache and history share a source-scoped ID; the shelf keeps the upstream ID.
+String shuqiReaderId(String bookId) =>
+    historyStorageKeyFor(bookId, 'book', source: shuqiSourceId);
 
 String? shuqiBookIdFromReaderId(String readerId) {
   const prefix = 'shuqi:';
@@ -40,46 +41,4 @@ Future<String> loadShuqiChapter(
     throw StateError('这一章没有取到正文（${chapter.title}）');
   }
   return text;
-}
-
-/// Shuqi sessions do not write local reading history, time or watched sets.
-/// Shared by the detail and cached-reader entry points.
-class ReadOnlyReaderStore implements ReaderStore {
-  const ReadOnlyReaderStore();
-
-  @override
-  Future<Map<String, dynamic>?> historyEntry(String id) async => null;
-
-  @override
-  Future<void> addHistory(Map<String, dynamic> entry) async {}
-
-  @override
-  Future<void> updateProgress(
-    String id,
-    int episode,
-    double progress, {
-    String? chapterId,
-    double? position,
-    double? maxScroll,
-  }) async {}
-
-  @override
-  Future<void> accumulateReadTime(
-    String bookId,
-    String kind,
-    double seconds, {
-    DateTime? at,
-  }) async {}
-
-  @override
-  Future<Set<String>> watchedEpisodeIds(String id) async => const {};
-
-  @override
-  Future<void> markEpisodeWatched(
-    String id,
-    Iterable<String> episodeIds,
-  ) async {}
-
-  @override
-  Future<void> forgetWatchedEpisodes(String id) async {}
 }

@@ -1,3 +1,4 @@
+import '../models/shuqi_book.dart';
 import 'library_store.dart';
 
 final _scopedStores = Expando<Map<String, ReaderStore>>('media history stores');
@@ -18,9 +19,13 @@ String historyContentId(Map<String, dynamic> entry) =>
     (entry['contentId'] ?? entry['id'])?.toString() ?? '';
 
 String historyStatisticsId(Map<String, dynamic> entry) {
-  final kind = entry['kind'];
-  if (kind == 'audio' || kind == 'manga') {
-    return '$kind:${historyContentId(entry)}';
+  final contentId = historyContentId(entry);
+  final kind = entry['kind']?.toString() ?? 'book';
+  final source = historySource(entry);
+  if (kind == 'audio' ||
+      kind == 'manga' ||
+      (source == shuqiSourceId && kind == 'book')) {
+    return historyStorageKeyFor(contentId, kind, source: source);
   }
   return (entry['contentId'] != null
               ? entry['id']

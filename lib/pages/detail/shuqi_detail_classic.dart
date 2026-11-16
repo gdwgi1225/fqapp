@@ -10,7 +10,7 @@ part of '../shuqi_detail_page.dart';
 /// Display only. It reads the same `_book` / `_toc` / loader state as the 档案
 /// layout, and the chapter rows stay a lazy `SliverList` so a 400+ chapter 书旗
 /// catalogue still builds only what is on screen. Opening a chapter keeps the
-/// read-only `shuqi:<id>` namespace and store from `_openChapter`.
+/// `shuqi:<id>` namespace and local progress store from `_openChapter`.
 extension _ShuqiDetailClassic on _ShuqiDetailPageState {
   Widget _buildClassicPage(BuildContext context, HomePalette palette) {
     return Scaffold(
@@ -199,12 +199,12 @@ extension _ShuqiDetailClassic on _ShuqiDetailPageState {
                       key: const Key('shuqi-read-button'),
                       onPressed: chapters.isEmpty
                           ? null
-                          : () => unawaited(_openChapter(0)),
+                          : () => unawaited(_openReading()),
                       style: detailPrimaryButtonStyle(
                         palette,
                         minimumSize: const Size(110, 40),
                       ),
-                      child: const Text('开始阅读'),
+                      child: Text(_readLabel),
                     ),
                   ],
                 ),

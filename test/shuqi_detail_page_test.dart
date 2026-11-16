@@ -8,10 +8,13 @@ import 'package:fqapp/pages/reader_page.dart';
 import 'package:fqapp/pages/shuqi_detail_page.dart';
 import 'package:fqapp/services/secure_key_provider.dart';
 
+import 'support/fakes.dart';
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   const secureKeys = MethodChannel('fqapp/secure_keys');
   setUp(() {
+    setSingleChapterPrefs({'reader_page_mode': 'scroll'});
     SecureKeyProvider.instance.resetForTest();
     // Opening Shuqi now initializes the encrypted chapter catalogue. Resolve
     // its platform dependency instead of leaving a native-key timeout pending.
@@ -82,13 +85,31 @@ void main() {
     expect(find.text('共 1 章'), findsOneWidget);
   });
 
-  testWidgets('opening a chapter gives the reader a store that drops history', (
+  testWidgets('Shuqi resumes saved progress and respects catalogue choices', (
     tester,
   ) async {
+    final history = MemoryReaderStore(
+      entry: {
+        'id': 'shuqi:34078',
+        'bookId': 'shuqi:34078',
+        'contentId': '34078',
+        'source': 'shuqi',
+        'kind': 'book',
+        'chapterId': '2180323',
+        'episode': 0,
+        'positionVersion': 2,
+        'textOffset': 300,
+      },
+    );
     await tester.pumpWidget(
       MaterialApp(
         home: ShuqiDetailPage(
           bookId: '34078',
+          readerStore: history,
+          chapterLoader: (chapter) async => List.generate(
+            80,
+            (i) => '${chapter.title} 第 $i 段用于验证阅读进度恢复的正文。',
+          ).join('\n'),
           bookLoader: (_) async => {
             'data': {
               'bookId': '34078',
@@ -100,9 +121,10 @@ void main() {
           tocLoader: (_) async => {
             'data': {
               'path': 'h5',
-              'total': 1,
+              'total': 2,
               'chapters': [
                 {'chapterId': '2180322', 'title': '第1章 山边小村', 'isVip': false},
+                {'chapterId': '2180323', 'title': '第2章 山中修行', 'isVip': false},
               ],
             },
           },
@@ -111,32 +133,41 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('开始阅读'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('继续阅读'), findsOneWidget);
+    await tester.tap(find.text('继续阅读'));
+    await tester.pumpAndSettle();
 
     final reader = tester.widget<ReaderPage>(find.byType(ReaderPage));
     expect(reader.localOnly, isTrue);
-    final store = reader.readerStore;
     expect(
-      store,
-      isNotNull,
-      reason: 'the reader must not fall back to the global history store',
+      reader.startIndex,
+      1,
+      reason: 'the chapter ID survives index changes',
     );
+    expect(reader.readerStore, same(history));
+    final position = tester
+        .widget<ListView>(find.byKey(const ValueKey('reader-paragraph-list')))
+        .controller!;
+    expect(position.offset, greaterThan(0));
+    expect(history.entry!['textOffset'], 300);
+    expect(history.entry!['source'], 'shuqi');
+    expect(history.entry!['contentId'], '34078');
+    position.jumpTo(700);
+    await tester.pump(const Duration(seconds: 2));
+    expect(history.entry!['position'], 700);
+    expect(history.seconds, 0);
 
-    // ReaderPage 的 _persistProgress/_settleReadTime 会写这个 store；书旗是
-    // 只读源，所有写入必须被丢弃。
-    await store!.addHistory({
-      'id': 'shuqi:34078',
-      'kind': 'book',
-      'bookId': 'shuqi:34078',
-    });
-    await store.accumulateReadTime('shuqi:34078', 'book', 30);
-    await store.updateProgress('shuqi:34078', 0, 0.5);
-    expect(await store.historyEntry('shuqi:34078'), isNull);
+    Navigator.of(tester.element(find.byType(ReaderPage))).pop();
+    await tester.pumpAndSettle();
+    expect(find.text('继续阅读'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('shuqi-chapter-0')));
+    await tester.pumpAndSettle();
+    final selected = tester.widget<ReaderPage>(find.byType(ReaderPage));
+    expect(selected.startIndex, 0);
+    expect(history.entry!['chapterId'], '2180322');
 
-    // 撤掉阅读器，别让还在跑的正文请求把 setState 带出测试。
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pumpAndSettle();
+    expect(history.seconds, 0);
   });
 }

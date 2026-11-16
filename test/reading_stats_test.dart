@@ -53,6 +53,14 @@ void main() {
       history: [
         {'id': 'old', 'bookId': 'old', 'title': '旧书', 'time': time},
         {'id': 'new', 'bookId': 'new', 'title': '新书', 'time': time},
+        {
+          'id': 'shuqi:old',
+          'bookId': 'shuqi:old',
+          'contentId': 'old',
+          'source': 'shuqi',
+          'title': '书旗书',
+          'time': time,
+        },
       ],
       readTime: {
         'new': {'2026-3-4': 3600},

@@ -223,6 +223,16 @@ mixin _LibraryPageActions on _LibraryPageStateBase {
   Future<void> _open(MediaItem item, {bool importedResume = false}) async {
     if (isShuqiItem(item)) {
       if (await _openCached(item) || !mounted) return;
+      if (await openRecentBook(
+        context,
+        item,
+        cache: widget.cacheStore,
+        readerStore: widget.readerStore,
+        directoryLoader: widget.directoryLoader,
+      )) {
+        return;
+      }
+      if (!mounted) return;
       await openBookDetail(context, item, entry: BookOpenEntry.shelf);
       return;
     }
@@ -620,7 +630,11 @@ mixin _LibraryPageActions on _LibraryPageStateBase {
     if (!confirmed || !mounted) return;
     final targets = [
       for (final entry in selected)
-        (contentId: entry.contentId, kind: entry.item.kind),
+        (
+          contentId: entry.contentId,
+          kind: entry.item.kind,
+          source: entry.item.source,
+        ),
     ];
     final removed = {for (final entry in selected) entry.selectionKey};
     // Same optimistic update as 移出书架: the rows leave the screen now, and a
