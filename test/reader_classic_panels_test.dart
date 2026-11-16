@@ -357,6 +357,7 @@ void main() {
             residual = viewport.top - r.top;
           }
         }
+
         for (var i = 0; i < chapters.length; i++) {
           consider(find.byKey(ValueKey('reader-directory-row-$i')));
         }
@@ -374,25 +375,23 @@ void main() {
         chapters: chapters,
         textScale: 1,
       );
-      final position = tester.state<ScrollableState>(
-        find
-            .descendant(
-              of: find.byKey(scrollKey),
-              matching: find.byType(Scrollable),
-            )
-            .first,
-      ).position;
+      final position = tester
+          .state<ScrollableState>(
+            find
+                .descendant(
+                  of: find.byKey(scrollKey),
+                  matching: find.byType(Scrollable),
+                )
+                .first,
+          )
+          .position;
       position.jumpTo(600);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
 
       final (beforeKey, beforeResidual) = anchoredTop();
       expect(beforeKey, isNotNull, reason: '深滚后应有一行横跨视口顶线');
-      expect(
-        position.pixels,
-        greaterThan(300),
-        reason: '起始应停在较深的滚动位置',
-      );
+      expect(position.pixels, greaterThan(300), reason: '起始应停在较深的滚动位置');
 
       // 放大 textScaler：classic 行高随缩放变化，触发 didChangeDependencies 的
       // stride 重锚分支。chapters 仍是同一实例，所以不会走 didUpdateWidget 复位。

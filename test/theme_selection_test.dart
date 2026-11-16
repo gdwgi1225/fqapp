@@ -153,15 +153,14 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      Material painted(String key) =>
-          tester.widget<Material>(
-            find
-                .descendant(
-                  of: find.byKey(ValueKey(key)),
-                  matching: find.byType(Material),
-                )
-                .first,
-          );
+      Material painted(String key) => tester.widget<Material>(
+        find
+            .descendant(
+              of: find.byKey(ValueKey(key)),
+              matching: find.byType(Material),
+            )
+            .first,
+      );
       // 卡片 / 对话框：实渲染 Material 的底色必须来自阅读预设。
       expect(painted('probe-card').color, preset.panelColor);
       expect(painted('probe-dialog').color, preset.sheetColor);

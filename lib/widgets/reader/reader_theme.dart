@@ -257,10 +257,8 @@ extension ReaderThemeColors on ReaderThemePreset {
       dialogTheme: base.dialogTheme.copyWith(
         backgroundColor: sheetColor,
         surfaceTintColor: Colors.transparent,
-        titleTextStyle:
-            (base.dialogTheme.titleTextStyle ?? const TextStyle()).copyWith(
-              color: textColor,
-            ),
+        titleTextStyle: (base.dialogTheme.titleTextStyle ?? const TextStyle())
+            .copyWith(color: textColor),
         contentTextStyle:
             (base.dialogTheme.contentTextStyle ?? const TextStyle()).copyWith(
               color: mutedTextColor,

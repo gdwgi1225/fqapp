@@ -81,11 +81,7 @@ void main() {
         0,
         reason: '$file 的 main() 里出现 return，会重新触发 Windows Shader Warning',
       );
-      expect(
-        assigns,
-        1,
-        reason: r'$file 的 main() 应只对 frag_color 赋值一次',
-      );
+      expect(assigns, 1, reason: r'$file 的 main() 应只对 frag_color 赋值一次');
     });
   }
 }
