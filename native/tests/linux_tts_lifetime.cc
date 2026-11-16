@@ -19,6 +19,14 @@ void lifetime_destructor_entered() {
   schedule.notify_all();
 }
 struct SpeechLifetimeProbe {
+  static void unavailable_service(FlEventChannel *channel) {
+    Speech speech(channel);
+    for (int attempt = 0; attempt < 2; ++attempt) {
+      assert(!speech.open());
+      assert(speech.connection == nullptr);
+      assert(Speech::active.load() == nullptr);
+    }
+  }
   static void run(FlEventChannel *channel) {
     for (int iteration = 0; iteration < 32; ++iteration) {
       {
@@ -78,7 +86,7 @@ G_DEFINE_TYPE_WITH_CODE(
                           lifetime_messenger_interface_init))
 static void lifetime_messenger_class_init(LifetimeMessengerClass *) {}
 static void lifetime_messenger_init(LifetimeMessenger *) {}
-int main() {
+int main(int argc, char **) {
   // Unknown ids never emit; the channel is only used for actual GObject
   // ownership.
   auto *messenger =
@@ -86,10 +94,14 @@ int main() {
   auto *codec = fl_standard_method_codec_new();
   auto *channel =
       fl_event_channel_new(messenger, "lifetime-test", FL_METHOD_CODEC(codec));
-  fqapp::SpeechLifetimeProbe::run(channel);
+  if (argc > 1)
+    fqapp::SpeechLifetimeProbe::unavailable_service(channel);
+  else
+    fqapp::SpeechLifetimeProbe::run(channel);
   g_object_unref(channel);
   g_object_unref(codec);
   g_object_unref(messenger);
-  std::cout
-      << "PASS 32 in-flight callback/destructor interleavings under ASan\n";
+  std::cout << (argc > 1 ? "PASS unavailable service retry under ASan\n"
+                         : "PASS 32 in-flight callback/destructor "
+                           "interleavings under ASan\n");
 }

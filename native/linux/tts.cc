@@ -5,6 +5,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <deque>
 #include <libspeechd.h>
 #include <map>
@@ -91,8 +92,11 @@ class Speech final : public Tts {
       return true;
     // Do not start or reconfigure a user's daemon. Missing service is a visible
     // error.
+    // libspeechd requires writable error storage, owned by the caller.
+    char *error = nullptr;
     connection = spd_open2("fqapp", "reader", nullptr, SPD_MODE_THREADED,
-                           nullptr, 0, nullptr);
+                           nullptr, 0, &error);
+    std::free(error);
     if (!connection)
       return false;
     {
