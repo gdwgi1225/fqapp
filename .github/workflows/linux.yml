@@ -72,6 +72,7 @@ jobs:
           CARGO_NET_OFFLINE=false cargo fetch --manifest-path rust/Cargo.toml --locked
           flutter analyze --no-pub
           python test/linux_packaging_test.py
+          python test/linux_tts_lifetime_test.py
           bash scripts/build_linux_package.sh /tmp/arch-package HEAD
           git diff --exit-code -- pubspec.lock rust/Cargo.lock
           pacman -Q > build/validation/linux/arch-packages.txt
