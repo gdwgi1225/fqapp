@@ -264,7 +264,7 @@ extension _ReaderPageListening on _ReaderPageState {
       if (next >= 0) unawaited(_jumpToChapter(next, followListening: true));
       return;
     }
-    // 跟随每 20 拍（≈2s）补一次落盘：跟随期间滚动防抖永远等不到。
+    // 跟随每 20 拍（≈2s）补一次落盘。
     if (_addressToPlayback(quiet: true) && _followPoll.saveDue()) {
       _settleReadTime();
       unawaited(_persistProgress());
@@ -320,18 +320,50 @@ extension _ReaderPageListening on _ReaderPageState {
     if (_paged) {
       _pagedKey.currentState?.followOffset(offset);
     } else if (_scrollController.hasClients) {
-      final max = _joined
-          ? layout.maxScroll
-          : _scrollController.position.maxScrollExtent;
-      final length = layout.textLength;
-      if (max > 0) {
-        final ratio = length > 0
-            ? (offset / length).clamp(0.0, 1.0)
-            : session.progress;
-        _jumpScroll(ratio * max);
+      if (quiet) {
+        _followScrollOffset(layout, offset);
+      } else {
+        _jumpScroll(layout.scrollForTextOffset(offset));
       }
     }
     return true;
+  }
+
+  void _followScrollOffset(ReaderChapterLayout layout, int offset) {
+    final position = _scrollController.position;
+    if (!position.hasContentDimensions || position.isScrollingNotifier.value) {
+      return;
+    }
+    final joined = _joinedKey.currentState?.position;
+    if (_joined && joined?.index != _index) return;
+    final scroll = joined?.scroll ?? position.pixels;
+    final viewport = position.viewportDimension;
+    // 正在读的行还在阅读区域内时，让正文停在原处。
+    if (offset >= layout.textOffsetAtScroll(scroll) &&
+        offset < layout.textOffsetAtScroll(scroll + viewport * .75)) {
+      return;
+    }
+    final target = layout.scrollForTextOffset(
+      offset,
+      leadingInset: viewport / 3,
+    );
+    final pixels = ((joined?.start ?? 0) + target).clamp(
+      position.minScrollExtent,
+      position.maxScrollExtent,
+    );
+    final distance = (pixels - position.pixels).abs();
+    if (distance < 1) return;
+    if (einkModeNotifier.value || distance > viewport) {
+      _jumpScroll(target);
+    } else {
+      unawaited(
+        position.animateTo(
+          pixels,
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOutCubic,
+        ),
+      );
+    }
   }
 
   /// 同步胶囊「原进度」：回到朗读处并重新跟随。
