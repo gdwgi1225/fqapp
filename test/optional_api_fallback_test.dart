@@ -109,24 +109,47 @@ void main() {
           body: '{"code":1301008,"message":"no available speech text"}',
         ),
       ]) {
-        test('${failure.name} resolves to the optional empty result', () async {
-          final transport = MockClient(
-            (_) async =>
-                http.Response.bytes(utf8.encode(failure.body), failure.status),
-          );
-          addTearDown(transport.close);
-          final api = ApiClient(client: transport, baseUrl: 'http://localhost');
+        test(
+          '${failure.name} follows the optional-call failure contract',
+          () async {
+            final transport = MockClient(
+              (_) async => http.Response.bytes(
+                utf8.encode(failure.body),
+                failure.status,
+              ),
+            );
+            addTearDown(transport.close);
+            final api = ApiClient(
+              client: transport,
+              baseUrl: 'http://localhost',
+            );
 
-          expect(await loader.isEmpty(api), isTrue);
-        });
+            final result = loader.isEmpty(api);
+            if (loader.name == 'chapter timeline' &&
+                failure.name != 'upstream unavailable') {
+              if (failure.name == 'invalid JSON') {
+                await expectLater(result, throwsFormatException);
+              } else {
+                await expectLater(result, throwsA(isA<ApiException>()));
+              }
+            } else {
+              expect(await result, isTrue);
+            }
+          },
+        );
       }
 
-      test('connection failure still resolves to the empty result', () async {
+      test('connection failure follows the optional-call contract', () async {
         final transport = MockClient((request) async {
           throw http.ClientException('connection refused', request.url);
         });
         addTearDown(transport.close);
-        expect(await loader.isEmpty(ApiClient(client: transport)), isTrue);
+        final result = loader.isEmpty(ApiClient(client: transport));
+        if (loader.name == 'chapter timeline') {
+          await expectLater(result, throwsA(isA<http.ClientException>()));
+        } else {
+          expect(await result, isTrue);
+        }
       });
 
       test('valid data still produces a nonempty result', () async {

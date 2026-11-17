@@ -49,6 +49,15 @@ class _AudioPlaybackController extends ChangeNotifier
   bool _hasPlayed = false;
   int _generation = 0;
   int _seekGeneration = 0;
+  Completer<void>? _trackCancellation;
+  static const _trackRetryAttempts = 3;
+  static const _trackRetryDelay = Duration(milliseconds: 200);
+  static const _trackRequestTimeout = Duration(seconds: 8);
+  static const _trackRecoveryDelay = Duration(seconds: 30);
+  Timer? _trackRecoveryTimer;
+  Completer<void>? _trackRecoveryCancellation;
+  bool _subtitlesRecoveryPending = false;
+  bool _timeTrackRecoveryPending = false;
   Timer? _saveTimer;
   // 小米公平运行内存 KILL 广播的刷盘注销函数，见 reader_page.dart。
   VoidCallback? _unregisterFairMemoryFlush;
@@ -84,7 +93,7 @@ class _AudioPlaybackController extends ChangeNotifier
   /// 猜一个位置比不高亮更糟。
   AudioTimeTrack _timeTrack = AudioTimeTrack.empty;
 
-  /// 本章的时间点请求是否已经有结果（成功或空）。
+  /// 本章的时间点请求是否已经有终态（成功、明确空轨或有限重试耗尽）。
   ///
   /// 页面要区分「还在拉取」和「拉完了但没有时间轴」：前者不该闪烁地露出
   /// 入口，后者该把入口永久藏掉。空轨本身分不出这两种状态，所以单独记。
@@ -160,22 +169,36 @@ class _AudioPlaybackController extends ChangeNotifier
     return _defaultAudioExtras(_bookId);
   }
 
-  /// Resolves 边听边读 subtitles. Books without generated speech text answer
-  /// with an empty track, so this is never treated as an error.
-  Future<SubtitleTrack> _loadSubtitles(String itemId, String toneId) {
+  /// Resolves 边听边读 subtitles. A book without generated speech text answers
+  /// with an empty track; transient API failures still propagate to the retry
+  /// owner here.
+  Future<SubtitleTrack> _loadSubtitles(
+    String itemId,
+    String toneId, {
+    Future<void>? cancel,
+  }) {
     final loader = request.subtitleLoader;
     if (loader != null) return loader(itemId, toneId);
     if (request.sourceLoader != null || request.playerFactory != null) {
       return Future.value(SubtitleTrack.empty);
     }
-    return ApiClient.instance.chapterTimeline(itemId, toneId: toneId);
+    return ApiClient.instance.chapterTimeline(
+      itemId,
+      toneId: toneId,
+      cancel: cancel,
+      timeout: _trackRequestTimeout,
+    );
   }
 
   /// Resolves the 听书 → 正文 mapping that drives listen-along highlighting.
   ///
-  /// Same shape as [_loadSubtitles]: optional, and an empty answer is normal
-  /// (the book has no generated timeline for this tone).
-  Future<AudioTimeTrack> _loadTimePoints(String itemId, String toneId) {
+  /// Same shape as [_loadSubtitles]: empty means the book has no generated
+  /// timeline for this tone, while transient failures propagate.
+  Future<AudioTimeTrack> _loadTimePoints(
+    String itemId,
+    String toneId, {
+    Future<void>? cancel,
+  }) {
     final loader = request.timePointLoader;
     if (loader != null) return loader(itemId, toneId);
     if (request.sourceLoader != null || request.playerFactory != null) {
@@ -185,9 +208,11 @@ class _AudioPlaybackController extends ChangeNotifier
       _bookId,
       itemId,
       toneId: toneId,
-      // 真人讲书的音频时间轴先取 req_type=2；这一版上游对部分书拒绝它，
-      // ApiClient 会在失败时回落一次到 3 并记住，不在这里重试。
+      // 真人时间点先取 2；明确不支持或缺原著映射由 ApiClient 回落到 3，
+      // 瞬态失败交给本控制器有限重试。
       reqType: _mode == 'narrator' ? 2 : 3,
+      cancel: cancel,
+      timeout: _trackRequestTimeout,
     );
   }
 
@@ -195,6 +220,24 @@ class _AudioPlaybackController extends ChangeNotifier
       !_closed &&
       generation == _generation &&
       (player == null || identical(player, _player));
+
+  void _cancelTrackRequests() {
+    final cancellation = _trackCancellation;
+    if (cancellation != null && !cancellation.isCompleted) {
+      cancellation.complete();
+    }
+  }
+
+  bool _isTransientTrackFailure(Object error) =>
+      error is TimeoutException ||
+      error is FormatException ||
+      isTransientNetworkFailure(error);
+
+  Future<void> _waitForTrackRetry(Future<void> cancel, int failedAttempt) =>
+      Future.any<void>([
+        Future<void>.delayed(_trackRetryDelay * (failedAttempt + 1)),
+        cancel,
+      ]);
 
   bool get _ready =>
       !_closed && !_loading && _error == null && (_player?.isCreated ?? false);
@@ -477,6 +520,7 @@ class _AudioPlaybackController extends ChangeNotifier
   Future<void> _pauseForOtherMedia() async {
     _visibilityResumeGeneration = null;
     if (_closed) return;
+    _cancelTrackRecovery(this);
     _cancelAdvanceCountdown(this);
     if (!_wantPlay) return;
     _update(() => _wantPlay = false);
@@ -563,8 +607,13 @@ class _AudioPlaybackController extends ChangeNotifier
   }) async {
     if (_closed || index < 0 || index >= _chapters.length) return;
     // 任何换章动作都意味着用户自己接管了，倒计时窗口必须作废。
+    _resetTrackRecovery(this);
     _cancelAdvanceCountdown(this);
     final generation = ++_generation;
+    _cancelTrackRequests();
+    final trackCancellation = Completer<void>();
+    _trackCancellation = trackCancellation;
+    final trackCancelled = trackCancellation.future;
     ++_seekGeneration;
     _saveTimer?.cancel();
     _listenTime.stop();
@@ -669,10 +718,19 @@ class _AudioPlaybackController extends ChangeNotifier
       var timeTrackReady = false;
       Duration? anchorPosition;
       if (paragraph != null && paragraph.ordinal >= 0) {
+        final anchorCancellation = Completer<void>();
+        final anchorTimer = Timer(
+          const Duration(seconds: 8),
+          anchorCancellation.complete,
+        );
         try {
           final track = await _loadTimePoints(
             itemId,
             source.toneId,
+            cancel: Future.any<void>([
+              trackCancelled,
+              anchorCancellation.future,
+            ]),
           ).timeout(const Duration(seconds: 8));
           if (!_current(generation)) return;
           _timeTrack = track;
@@ -686,6 +744,9 @@ class _AudioPlaybackController extends ChangeNotifier
           if (ms != null) anchorPosition = Duration(milliseconds: ms);
         } catch (_) {
           // 没有映射不是错误：这本书没生成过时间轴，或请求超时。
+        } finally {
+          anchorTimer.cancel();
+          if (!anchorCancellation.isCompleted) anchorCancellation.complete();
         }
       }
       final restoredPosition =
@@ -710,11 +771,15 @@ class _AudioPlaybackController extends ChangeNotifier
       _publishMoreState();
       // Subtitles are decoration: they arrive whenever the book has generated
       // speech text and are ignored otherwise.
-      unawaited(_refreshSubtitles(generation, itemId, source.toneId));
+      unawaited(
+        _refreshSubtitles(generation, itemId, source.toneId, trackCancelled),
+      );
       // 同步映射决定阅读页的朗读高亮；与字幕同时拉取，两个请求互不依赖。
       // 段落锚定已经拉过并且命中时跳过，避免同一章重复请求。
       if (!timeTrackReady) {
-        unawaited(_refreshTimePoints(generation, itemId, source.toneId));
+        unawaited(
+          _refreshTimePoints(generation, itemId, source.toneId, trackCancelled),
+        );
       } else {
         _publishListeningSession(playing: _player?.playing ?? false);
       }
@@ -835,27 +900,53 @@ class _AudioPlaybackController extends ChangeNotifier
     int generation,
     String itemId,
     String toneId,
+    Future<void> cancel,
   ) async {
-    try {
-      var track = await _loadSubtitles(itemId, toneId);
-      var estimated = false;
-      if (track.isEmpty) {
-        // 官方只显示服务端文稿；这里给没有文稿的书补一条估算轨，
-        // 用正文 + `/timepoints` 反推（见 audio_subtitle_synth.dart）。
-        final synth = await _synthesizeSubtitles(this, itemId);
+    var track = SubtitleTrack.empty;
+    var recoverableFailure = false;
+    for (var attempt = 0; attempt < _trackRetryAttempts; attempt++) {
+      if (!_current(generation)) return;
+      try {
+        track = await _loadSubtitles(itemId, toneId, cancel: cancel);
+        break;
+      } catch (error) {
+        if (!_current(generation)) return;
+        if (!_isTransientTrackFailure(error)) break;
+        if (attempt + 1 == _trackRetryAttempts) {
+          recoverableFailure = true;
+          break;
+        }
+        await _waitForTrackRetry(cancel, attempt);
+      }
+    }
+    if (!_current(generation)) return;
+    var estimated = false;
+    if (track.isEmpty) {
+      // The server track may be genuinely unavailable or exhausted its retry
+      // budget. Keep the existing local synthesis fallback either way.
+      try {
+        final synthesisRequest = BackendRequest();
+        unawaited(cancel.then((_) => synthesisRequest.cancel()));
+        final synth = await ApiClient.instance.withCancellation(
+          synthesisRequest,
+          () => _synthesizeSubtitles(this, itemId, generation: generation),
+        );
         if (synth != null && synth.isNotEmpty) {
           track = synth;
           estimated = true;
         }
+      } catch (_) {
+        // Synthesis is optional decoration and must not escape this detached
+        // request after the server track has reached its terminal state.
       }
-      if (!_current(generation)) return;
-      _subtitles = track;
-      _subtitlesEstimated = estimated;
-      _publishReadAlong();
-    } catch (_) {
-      // Optional timeline failures must not escape the unawaited request or
-      // interrupt playback. The chapter was already reset to an empty track.
     }
+    if (!_current(generation)) return;
+    _subtitlesRecoveryPending = recoverableFailure;
+    _subtitles = track;
+    _subtitlesEstimated = estimated;
+    _publishReadAlong();
+    _publishListeningSession(playing: _player?.playing ?? false);
+    _scheduleTrackRecovery(this);
   }
 
   /// Loads the 听书 → 正文 mapping for a chapter and publishes it if the
@@ -864,41 +955,54 @@ class _AudioPlaybackController extends ChangeNotifier
     int generation,
     String itemId,
     String toneId,
+    Future<void> cancel,
   ) async {
-    try {
-      final track = await _loadTimePoints(itemId, toneId);
+    var track = AudioTimeTrack.empty;
+    var recoverableFailure = false;
+    for (var attempt = 0; attempt < _trackRetryAttempts; attempt++) {
       if (!_current(generation)) return;
-      _timeTrack = track;
-    } catch (_) {
-      // 没有映射不是错误：这本书没生成过时间轴，或者章节文本已变化。保留
-      // 上一次的空值，阅读页就不高亮。
-      if (!_current(generation)) return;
+      try {
+        track = await _loadTimePoints(itemId, toneId, cancel: cancel);
+        break;
+      } catch (error) {
+        if (!_current(generation)) return;
+        if (!_isTransientTrackFailure(error)) break;
+        if (attempt + 1 == _trackRetryAttempts) {
+          recoverableFailure = true;
+          break;
+        }
+        await _waitForTrackRetry(cancel, attempt);
+      }
     }
-    // 无论有没有时间轴，这一章的请求都已经有结果了：页面据此决定是继续等
-    // 还是永久藏掉依赖时间轴的入口。
+    if (!_current(generation)) return;
+    // Publish track, readiness and the novel chapter alias as one snapshot only
+    // after success or the finite retry budget is exhausted.
+    _timeTrackRecoveryPending = recoverableFailure;
+    _timeTrack = track;
     _timeTrackReady = true;
-    // The chapter may already be playing: publish once so the page snapshot
-    // carries the new timeline without waiting for the next position tick.
     _publishReadAlong();
     _publishListeningSession(playing: _player?.playing ?? false);
+    _scheduleTrackRecovery(this);
   }
 
   void _publishReadAlong() {
     if (_closed || _index < 0 || _index >= _chapters.length) return;
     final preview = _seekPreview.value;
+    final position = preview == null
+        ? _position.value
+        : Duration(milliseconds: preview.round());
+    final novelChapter = _novelChapterAt(position);
     _readAlong.value = (
       chapterTitle: _chapters[_index].title,
       track: _subtitles,
       duration: _duration,
-      position: preview == null
-          ? _position.value
-          : Duration(milliseconds: preview.round()),
+      position: position,
       // 章节时间轴：订阅者据此把音频位置映射到原著正文。没有时间轴时
       // `timeTrackReady` 仍会变成 true，好让页面区分「还没拉到」和「没有」。
       timeTrackReady: _timeTrackReady,
       textItemId: _timeTrack.textItemId,
-      novelItemId: _timeTrack.novelItemId,
-      novelChapterTitle: _timeTrack.novelChapterTitle,
+      novelItemId: novelChapter.novelItemId,
+      novelChapterTitle: novelChapter.novelChapterTitle,
     );
   }
 
@@ -930,6 +1034,7 @@ class _AudioPlaybackController extends ChangeNotifier
       _player?.position ?? _position.value,
       _duration,
     );
+    final novelChapter = _novelChapterAt(position);
     final cueIndex = _subtitles.indexAt(position);
     ListeningSession.instance.update(
       bookId: _bookId,
@@ -952,9 +1057,26 @@ class _AudioPlaybackController extends ChangeNotifier
       // 真人讲书的阅读页别名：音频书/章节 id → 原著书/章节 id。阅读页据此
       // 继续匹配会话；没有时间轴映射时章节别名为空，阅读页退回不匹配。
       novelBookId: _linkedNovelBookId,
-      novelChapterId: _linkedNovelChapterId.isEmpty
+      novelChapterId: novelChapter.novelItemId.isEmpty
           ? null
-          : _linkedNovelChapterId,
+          : novelChapter.novelItemId,
+    );
+  }
+
+  /// The novel chapter covered at [position]. Timeline points can span several
+  /// novel chapters, so use the current point's alias and fall back to the
+  /// track-level alias only when that point does not carry one.
+  ({String novelItemId, String novelChapterTitle}) _novelChapterAt(
+    Duration position,
+  ) {
+    final point = _timeTrack.pointAt(position);
+    final pointItemId = point?.novelItemId.trim() ?? '';
+    final pointItemTitle = point?.itemTitle.trim() ?? '';
+    return (
+      novelItemId: pointItemId.isEmpty ? _timeTrack.novelItemId : pointItemId,
+      novelChapterTitle: pointItemTitle.isEmpty
+          ? _timeTrack.novelChapterTitle
+          : pointItemTitle,
     );
   }
 
@@ -1083,8 +1205,10 @@ class _AudioPlaybackController extends ChangeNotifier
         !player.buffering) {
       _listenTime.start();
       _prefetchNextAudioChapter();
+      _scheduleTrackRecovery(this);
     } else {
       _listenTime.stop();
+      _cancelTrackRecovery(this);
     }
   }
 
@@ -1156,6 +1280,8 @@ class _AudioPlaybackController extends ChangeNotifier
   void _fail(Object error, int generation) {
     if (!_current(generation)) return;
     _cancelAdvanceCountdown(this);
+    _resetTrackRecovery(this);
+    _cancelTrackRequests();
     ListeningSession.instance.clear();
     unawaited(NativePlayer.stopListenForeground(owner: _mediaOwner));
     ++_generation;
@@ -1198,6 +1324,7 @@ class _AudioPlaybackController extends ChangeNotifier
 
   Future<void> _pause(NativePlayer player, int generation) async {
     _cancelAdvanceCountdown(this);
+    _cancelTrackRecovery(this);
     _publishListeningSession(playing: false);
     try {
       await player.pause();
@@ -1328,9 +1455,6 @@ class _AudioPlaybackController extends ChangeNotifier
     return id.isEmpty || id == _bookId ? null : id;
   }
 
-  /// 当前集在时间轴上对应的原著章节 id；没有映射时为空。
-  String get _linkedNovelChapterId => _timeTrack.novelItemId;
-
   List<AudioTone> get _narratorTones => _extras.tones.narratorTones;
 
   bool get _hasFixedTone => _versionHasFixedTone ?? _extras.tones.hasFixedTone;
@@ -1405,9 +1529,11 @@ class _AudioPlaybackController extends ChangeNotifier
       completed: _completed,
       autoplay: _wantPlay,
     );
+    _cancelTrackRecovery(this);
     _update(() => _wantPlay = false);
     _publishListeningSession(playing: false);
     final suspendedGeneration = ++_generation;
+    _cancelTrackRequests();
     ++_seekGeneration;
     _saveTimer?.cancel();
     _listenTime.stop();
@@ -1452,6 +1578,8 @@ class _AudioPlaybackController extends ChangeNotifier
       await _persistProgress();
       if (!_current(generation)) return;
       generation = ++_generation;
+      _resetTrackRecovery(this);
+      _cancelTrackRequests();
       ++_seekGeneration;
       _saveTimer?.cancel();
       _listenTime.stop();
@@ -1549,9 +1677,11 @@ class _AudioPlaybackController extends ChangeNotifier
     if (_closed) return;
     _closed = true;
     _cancelAdvanceCountdown(this);
+    _resetTrackRecovery(this);
     _unregisterFairMemoryFlush?.call();
     _unregisterFairMemoryFlush = null;
     ++_generation;
+    _cancelTrackRequests();
     ++_seekGeneration;
     ++_settingsGeneration;
     _saveTimer?.cancel();
