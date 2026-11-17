@@ -35,16 +35,37 @@ class WebDavSyncService with WidgetsBindingObserver {
   Timer? _debounce;
   Timer? _poll;
   bool _attached = false;
+  bool _suspended = false;
   bool _applying = false;
   int _generation = 0;
   Future<void>? _running;
   Box<dynamic>? _state;
 
   Future<void> init() async {
+    config = await readSavedConfig();
+    await _activate();
+  }
+
+  static Future<WebDavConfig?> readSavedConfig() async {
     final saved = await _storage.read(_configKey);
-    if (saved != null) {
-      config = WebDavConfig.fromJson(jsonDecode(saved) as Map<String, dynamic>);
+    return saved == null
+        ? null
+        : WebDavConfig.fromJson(jsonDecode(saved) as Map<String, dynamic>);
+  }
+
+  Future<void> suspendForMultiDeviceSync() async {
+    _suspended = true;
+    _generation++;
+    _detach();
+    try {
+      await _running;
+    } catch (_) {
+      // The old target must not block migration after its sync has stopped.
     }
+  }
+
+  Future<void> resumeAfterSetup() async {
+    _suspended = false;
     await _activate();
   }
 
@@ -70,7 +91,7 @@ class WebDavSyncService with WidgetsBindingObserver {
 
   Future<void> _activate() async {
     final generation = _generation;
-    if (config?.enabled != true) {
+    if (_suspended || config?.enabled != true) {
       status.value = config == null ? '尚未配置' : '自动同步已关闭';
       return;
     }
@@ -121,6 +142,7 @@ class WebDavSyncService with WidgetsBindingObserver {
   }
 
   Future<void> sync() {
+    if (_suspended) return Future.value();
     if (_running case final running?) return running;
     final operation = _sync();
     _running = operation;

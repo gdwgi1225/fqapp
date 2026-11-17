@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:cupertino_ui/cupertino_ui.dart';
+import '../services/sync/multi_device_sync_service.dart';
 import 'package:flutter/foundation.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
@@ -643,7 +644,10 @@ class _LibraryPageState extends State<LibraryPage>
                         // 编辑态里横向拖动留给列表自身（多选/滑动删除的起手）。
                         enabled: !_editing,
                         child: RefreshIndicator(
-                          onRefresh: () => _refreshUpdates(force: true),
+                          onRefresh: () async {
+                            await _refreshUpdates(force: true);
+                            await MultiDeviceSyncService.instance.sync();
+                          },
                           child: _content(context),
                         ),
                       ),

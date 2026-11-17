@@ -6,6 +6,8 @@ import 'services/platform_capabilities.dart';
 import 'services/platform_channel.dart';
 
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter/foundation.dart'
+    show LicenseRegistry, LicenseEntryWithLineBreaks;
 import 'package:flutter/services.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
@@ -34,6 +36,7 @@ import 'services/appearance_prewarm.dart';
 import 'services/app_style_tokens.dart';
 import 'services/api_client.dart';
 import 'services/ai_reading/ai_controller.dart';
+import 'services/sync/multi_device_sync_service.dart';
 import 'services/webdav_sync_service.dart';
 import 'services/audio_download_store.dart';
 import 'services/audio_floating_routes.dart';
@@ -101,6 +104,11 @@ Future<void> main() async {
 /// 这些都不决定界面能不能起来，所以失败只记日志（见 [main]）。
 Future<void> _prepareRuntime() async {
   registerPortedUiLicenses();
+  LicenseRegistry.addLicense(() async* {
+    yield LicenseEntryWithLineBreaks(const [
+      'sync_storage',
+    ], await rootBundle.loadString('assets/licenses/sync_storage.txt'));
+  });
   if (isLinuxDesktop) await LinuxPlatform.install();
   if (isWindowsDesktop) await DesktopPlatform.instance.initialize();
   // 应用内日志：接管 debugPrint 与 FlutterError.onError，未处理异步异常由
@@ -141,6 +149,7 @@ Future<void> _prepareRuntime() async {
           } catch (error, stack) {
             AppLog.w('exit', '退出前停止后端失败', error: error, stack: stack);
           }
+          await MultiDeviceSyncService.instance.shutdown();
           await Hive.close();
         };
   }
@@ -231,8 +240,14 @@ Future<void> _loadLocalData() async {
     spFuture.then<void>((_) {}),
     themeStyleFuture,
   ]);
-  // WebDAV 为可选功能；网络或安全存储故障不阻塞本机阅读。
-  unawaited(optional(WebDavSyncService.instance.init));
+  // 多端同步的网络或安全存储故障不阻塞本机阅读。
+  unawaited(
+    optional(() async {
+      final sync = MultiDeviceSyncService.instance;
+      await sync.initialize();
+      if (!sync.hasSelectedSyncBackend) await WebDavSyncService.instance.init();
+    }),
+  );
   // 听书后台播放开关：异步读取 SharedPreferences，失败退化为默认开启。
   unawaited(AudioPreferences.instance.load());
   // 短剧「边看边往后缓存」的开关与集数：同一条装配链里读，避免播放页

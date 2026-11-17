@@ -350,6 +350,65 @@ class LibraryStore implements ReaderStore {
 
   Future<List<Map<String, dynamic>>> history() async => historySnapshot();
 
+  /// Sync applies only if the caller's captured local data is still current.
+  /// The normal write queue prevents a playback save interleaving this batch.
+  Future<bool> applySyncedRecords({
+    required List<Map<String, dynamic>> history,
+    required Map<String, Map<String, int>> watched,
+    required bool Function(
+      List<Map<String, dynamic>>,
+      Map<String, Map<String, int>>,
+    )
+    acceptsCurrent,
+  }) => _serializeResult(() async {
+    final oldWatched = {
+      for (final key in _watchedBox.keys)
+        key.toString(): _watchedRecord(_watchedBox.get(key)),
+    };
+    if (!acceptsCurrent(historySnapshot(), oldWatched)) return false;
+    final oldKeys = <dynamic>[];
+    for (final key in _histBox.keys) {
+      final record = _historyRecord(_histBox.get(key), id: key.toString());
+      if (record != null) {
+        final (source, _, contentId) = _historyIdentity(record);
+        if (source == ShelfIdentity.fanqie && !contentId.startsWith('local_')) {
+          oldKeys.add(key);
+        }
+      }
+    }
+    final writes = <String, dynamic>{};
+    // Reserve novel identities first; colliding media keep a scoped key.
+    final ordered = [...history]
+      ..sort(
+        (a, b) => (a['kind'] == 'book' ? 0 : 1).compareTo(
+          b['kind'] == 'book' ? 0 : 1,
+        ),
+      );
+    for (final entry in ordered) {
+      if (historySource(entry) != ShelfIdentity.fanqie) continue;
+      final kind = entry['kind'] as String, id = entry['id'] as String;
+      var key = kind == 'audio' || kind == 'manga' ? '$kind:$id' : id;
+      if (writes.containsKey(key)) key = '$kind:$id';
+      writes[key] = {...entry, 'id': key, if (key != id) 'contentId': id};
+    }
+    _localHistoryCount = null;
+    if (writes.isNotEmpty) await _histBox.putAll(writes);
+    await _histBox.deleteAll(oldKeys.where((k) => !writes.containsKey(k)));
+    final watchedWrites = {
+      for (final e in watched.entries)
+        if (!e.key.startsWith('local_')) e.key: e.value,
+    };
+    if (watchedWrites.isNotEmpty) await _watchedBox.putAll(watchedWrites);
+    await _watchedBox.deleteAll(
+      oldWatched.keys.where(
+        (k) => !k.startsWith('local_') && !watchedWrites.containsKey(k),
+      ),
+    );
+    await _histBox.flush();
+    await _watchedBox.flush();
+    return true;
+  });
+
   /// Queue the snapshot behind saves already submitted to the store.
   Future<
     ({

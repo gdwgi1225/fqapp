@@ -101,6 +101,7 @@ flutter:
   uses-material-design: true
 
   assets:
+    - assets/licenses/sync_storage.txt
     - assets/config/config.json
     - assets/config/filter.json
     - assets/config/device_pool.example.json
