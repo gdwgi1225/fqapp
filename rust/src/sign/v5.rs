@@ -215,8 +215,10 @@ fn hash_f13_v5(query_hash: &[u8; 32], body_md5: &[u8; 16], ts: u32) -> [u8; 20] 
     data.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0x01, 0xa0]);
 
     let mut words: Vec<u32> = data
-        .chunks_exact(4)
-        .map(|chunk| u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|chunk| u32::from_be_bytes(*chunk))
         .collect();
     for index in 0..112 {
         let x = words[index + 1];
