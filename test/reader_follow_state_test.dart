@@ -12,6 +12,7 @@ import 'package:fqapp/services/reader_device.dart';
 import 'package:fqapp/widgets/reader/cue_index.dart';
 import 'package:fqapp/widgets/reader/reader_chapter_layout.dart';
 import 'package:fqapp/widgets/reader/reader_controls.dart';
+import 'package:fqapp/widgets/reader/reader_joined_scroll.dart';
 import 'package:fqapp/widgets/reader/reader_paged_view.dart';
 
 import 'support/controlled_player.dart';
@@ -298,27 +299,59 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('跟随滚动模式按固定周期落盘进度', (tester) async {
+  testWidgets('滚动跟读在朗读位置靠近屏幕下方时才平滑移动', (tester) async {
+    SharedPreferences.setMockInitialValues({'reader_page_mode': 'scroll'});
+    await _mount(tester);
+    final reader = tester.widget<ReaderJoinedScroll>(
+      find.byType(ReaderJoinedScroll),
+    );
+    final position = reader.controller.position;
+    final layout = reader.chapter.layout;
+    final track = _track();
+    final index = CueIndex.build(layout: layout, track: track);
+    final edge = layout.textOffsetAtScroll(position.viewportDimension * .75);
+    final atEdge = Iterable<int>.generate(40, (i) => i * 1000).firstWhere((ms) {
+      final offset = index.spanAtPositionMs(ms + 70)!.spokenOffset(ms + 70);
+      return offset >= edge;
+    });
+
+    _seed(positionMs: atEdge ~/ 2, track: track, cue: '长句');
+    ListeningSession.instance.setFollowArmed(true);
+    await tester.pump(const Duration(milliseconds: 150));
+    expect(position.pixels, 0);
+
+    _seed(positionMs: atEdge, track: track, cue: '长句');
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(position.pixels, 0, reason: '开始跟随时不能直接跳到目标');
+    await tester.pump(const Duration(milliseconds: 100));
+    final midScroll = position.pixels;
+    expect(midScroll, greaterThan(0));
+    await tester.pump(const Duration(milliseconds: 150));
+    expect(position.pixels, greaterThan(midScroll));
+
+    final finalScroll = position.pixels;
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(position.pixels, finalScroll, reason: '同一行可见时不再滚动');
+
+    _seed(positionMs: 36000, track: track, cue: '长句', playing: false);
+    ListeningSession.instance.jumpToPlaybackHandler!();
+    final seek = index.spanAtPositionMs(36070)!.spokenOffset(36070);
+    expect(position.pixels, layout.scrollForTextOffset(seek));
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('跟随滚动模式定期落盘进度', (tester) async {
     SharedPreferences.setMockInitialValues({'reader_page_mode': 'scroll'});
     final store = ControlledReaderStore();
     await _mount(tester, store: store);
-    // 起播：默认跟随，轮询把页面挪到朗读处。
-    _seed(positionMs: 0, track: _track(), cue: '长句');
-    await tester.pump(const Duration(milliseconds: 150));
-    // 等一次「像是滚动停下」的 500ms 防抖有机会落完，再取基线。
-    await tester.pump(const Duration(milliseconds: 700));
     final before = store.writes.length;
+    _seed(positionMs: 0, track: _track(), cue: '长句');
+    ListeningSession.instance.setFollowArmed(true);
 
-    // 播放位置持续推进：页面每 100ms 被程序化跳转一次，滚动防抖被不断重置。
-    for (var i = 1; i <= 12; i++) {
-      _seed(positionMs: i * 3000, track: _track(), cue: '长句');
-      await tester.pump(const Duration(milliseconds: 250));
-    }
-    expect(
-      store.writes.length,
-      greaterThan(before),
-      reason: '跟随期间滚动防抖永远等不到，必须按固定周期补存',
-    );
+    await tester.pump(const Duration(milliseconds: 1800));
+    expect(store.writes, hasLength(before));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(store.writes, hasLength(before + 1), reason: '正文停在原处时也应定期保存');
 
     await tester.pumpWidget(const SizedBox.shrink());
   });

@@ -684,7 +684,8 @@ class ReaderChapterLayout {
     return block.start + block.lines[line].start;
   }
 
-  double scrollForTextOffset(int offset) {
+  /// Positions the line below [leadingInset] when the scroll extent allows it.
+  double scrollForTextOffset(int offset, {double leadingInset = 0}) {
     if (offset <= 0) return 0;
     if (offset >= textLength) return maxScroll;
     final block =
@@ -698,14 +699,20 @@ class ReaderChapterLayout {
       );
       return visible.isEmpty
           ? maxScroll
-          : (spec.verticalPadding + visible.first.top).clamp(0, maxScroll);
+          : (spec.verticalPadding + visible.first.top - leadingInset).clamp(
+              0,
+              maxScroll,
+            );
     }
     final line =
         block.lines[_floorIndex(
           block.lines.length,
           (index) => block.start + block.lines[index].start <= offset,
         )];
-    return (spec.verticalPadding + block.top + line.top).clamp(0, maxScroll);
+    return (spec.verticalPadding + block.top + line.top - leadingInset).clamp(
+      0,
+      maxScroll,
+    );
   }
 
   /// New positions are independent of font, page count and viewport size.
