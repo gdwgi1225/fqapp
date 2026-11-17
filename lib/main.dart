@@ -573,15 +573,15 @@ class _AppBootstrapState extends State<AppBootstrap> {
               ),
               slivers: [
                 SliverToBoxAdapter(
-                  // 骨架自带的脉动是无限循环；启动这几百毫秒里它没有信息价值，
-                  // 还会让测试的 `pumpAndSettle()` 永远等不到静止。用
-                  // TickerMode 关掉动画，形状照常渲染。
-                  child: TickerMode(
-                    enabled: false,
-                    child: AppStyleTokens.of(context).isClassic
-                        ? const ClassicHomeSkeleton()
-                        : const HomeSkeleton(),
-                  ),
+                  // 骨架自带的脉动保留：它在说「还在加载」，而不是界面卡住。
+                  //
+                  // 代价是「本地数据未就绪」态没有静止的一帧——测试里不能靠
+                  // `pumpAndSettle()` 等它停下来（会卡到超时），要用有界推进
+                  // 推到目标出现为止（见 test/startup_gate_test.dart 的
+                  // pumpUntilFound）。
+                  child: AppStyleTokens.of(context).isClassic
+                      ? const ClassicHomeSkeleton()
+                      : const HomeSkeleton(),
                 ),
               ],
             ),

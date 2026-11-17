@@ -23,11 +23,10 @@ void main() {
   // 推进到 [finder] 命中为止。
   //
   // 单次 `pump()` 不够：本地数据就绪的回调是微任务，而 `pump()` 只在有帧被
-  // 调度时才重建界面——启动骨架的脉动被 TickerMode 关掉时没有帧被调度，那
-  // 一次 pump 只会把微任务跑掉、把重建排到下一帧。
+  // 调度时才重建界面，那一次 pump 只会把微任务跑掉、把重建排到下一帧。
   //
-  // 这里用「还找不到就再 pump 一次」的有界循环：与骨架是否在动无关，也不会
-  // 像 `pumpAndSettle()` 那样被无限循环的动画卡到超时。
+  // 这里用「还找不到就再 pump 一次」的有界循环：不会像 `pumpAndSettle()` 那样
+  // 被骨架自带的无限脉动卡到超时（骨架在位时它永远等不到静止）。
   Future<void> pumpUntilFound(WidgetTester tester, Finder finder) async {
     for (var i = 0; i < 10 && finder.evaluate().isEmpty; i++) {
       await tester.pump();
