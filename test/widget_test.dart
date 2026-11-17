@@ -17,12 +17,17 @@ void main() {
     addTearDown(() => tester.binding.setSurfaceSize(null));
     var attempts = 0;
     await tester.pumpWidget(
-      MaterialApp(
-        home: RootShell(
-          backendStarter: () async {
-            attempts++;
-            throw StateError(List.filled(80, '本地服务启动失败的详细信息').join('\n'));
-          },
+      // RootShell 现在立刻渲染真实首页（#318：成功路径不再整屏遮罩），
+      // HomePage 是 ConsumerWidget，因此测试要像 main() 一样带上
+      // ProviderScope。
+      ProviderScope(
+        child: MaterialApp(
+          home: RootShell(
+            backendStarter: () async {
+              attempts++;
+              throw StateError(List.filled(80, '本地服务启动失败的详细信息').join('\n'));
+            },
+          ),
         ),
       ),
     );
