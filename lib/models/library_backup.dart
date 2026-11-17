@@ -68,6 +68,7 @@ class LibraryBackup {
     required List<ShelfRecord> shelf,
     required List<Map<String, dynamic>> history,
     required Map<String, Map<String, int>> watched,
+    DateTime? createdAt,
     String? aiData,
     Map<String, dynamic> groups = const {},
   }) {
@@ -114,7 +115,7 @@ class LibraryBackup {
     return LibraryBackup._fromJson({
       'format': _format,
       'version': _versionFor(portableHistory, aiData),
-      'createdAt': DateTime.now().millisecondsSinceEpoch,
+      'createdAt': (createdAt ?? DateTime.now()).millisecondsSinceEpoch,
       'shelf': [
         for (final record in shelf)
           if (includeShelf(record))

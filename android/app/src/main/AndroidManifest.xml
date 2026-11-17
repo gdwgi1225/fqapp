@@ -1,4 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <queries>
+        <package android:name="com.quark.browser"/>
+        <package android:name="com.quark.clouddrive"/>
+        <package android:name="com.tencent.mobileqq"/>
+        <package android:name="com.tencent.mm"/>
+    </queries>
     <!-- 访问本地后端 127.0.0.1 与上游 API -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <!-- 听视频（listen mode）：前台服务保活 + 13+ 通知（通知被拒只影响可见性，服务照常跑） -->
@@ -23,6 +29,9 @@
         android:fullBackupContent="@xml/backup_rules"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:networkSecurityConfig="@xml/network_security_config">
+        <activity android:name=".CloudLoginActivity" android:exported="false"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|uiMode|density|fontScale"
+            android:theme="@style/NormalTheme" android:windowSoftInputMode="adjustResize"/>
         <service
             android:name=".ListenKeepAliveService"
             android:exported="false"
