@@ -210,6 +210,8 @@ extension ReaderThemeColors on ReaderThemePreset {
     return base.copyWith(
       colorScheme: scheme,
       scaffoldBackgroundColor: backgroundColor,
+      // Chip 的半透明选中色绘在默认 Material 画布上，底色也须跟随阅读预设。
+      canvasColor: backgroundColor,
       textTheme: base.textTheme.apply(
         bodyColor: textColor,
         displayColor: textColor,
@@ -234,15 +236,11 @@ extension ReaderThemeColors on ReaderThemePreset {
         prefixIconColor: mutedTextColor,
         suffixIconColor: mutedTextColor,
       ),
-      // Material Chip / ChoiceChip 只读 base.chipTheme：软件深色 + 阅读浅色时，
-      // 笔记筛选（全部 / 书签 / 划线）和简介分类这些 chip 会漏出深色 chipTheme
-      // 底 + 深色字，糊成黑块；白色软件 + 深色阅读同理（与上面 listTileTheme
-      // 是同一类泄漏）。这里统一改按阅读预设派生，chip 才跟正文同一套配色。
+      // 阅读明暗独立于软件主题，chip 子主题中的具体色值也须跟随阅读预设。
       chipTheme: base.chipTheme.copyWith(
         backgroundColor: fieldColor,
         // ChoiceChip（笔记筛选 / 搜索排序）选中背景读 secondarySelectedColor，
-        // FilterChip 选中读 selectedColor，两个字段都要覆盖；只设后者会让
-        // ChoiceChip 选中态漏出 base 深色主题的 secondarySelectedColor。
+        // FilterChip 选中读 selectedColor，两个字段都要覆盖。
         selectedColor: accentColor.withValues(alpha: 0.12),
         secondarySelectedColor: accentColor.withValues(alpha: 0.12),
         labelStyle: (base.chipTheme.labelStyle ?? const TextStyle()).copyWith(
