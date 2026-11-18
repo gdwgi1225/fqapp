@@ -37,7 +37,6 @@ import 'services/app_style_tokens.dart';
 import 'services/api_client.dart';
 import 'services/ai_reading/ai_controller.dart';
 import 'services/sync/multi_device_sync_service.dart';
-import 'services/webdav_sync_service.dart';
 import 'services/audio_download_store.dart';
 import 'services/audio_floating_routes.dart';
 import 'services/drama_cache_preferences.dart';
@@ -240,12 +239,11 @@ Future<void> _loadLocalData() async {
     spFuture.then<void>((_) {}),
     themeStyleFuture,
   ]);
-  // 多端同步的网络或安全存储故障不阻塞本机阅读。
+  // 多端同步的网络或安全存储故障不阻塞本机阅读。旧 WebDAV 配置由统一服务只读接管，绝不在这里启动云端覆盖流程。
   unawaited(
     optional(() async {
       final sync = MultiDeviceSyncService.instance;
       await sync.initialize();
-      if (!sync.hasSelectedSyncBackend) await WebDavSyncService.instance.init();
     }),
   );
   // 听书后台播放开关：异步读取 SharedPreferences，失败退化为默认开启。

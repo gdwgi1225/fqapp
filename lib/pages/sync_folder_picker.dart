@@ -26,6 +26,10 @@ class _SyncFolderPickerState extends State<SyncFolderPicker> {
   bool loading = true;
   String? error;
   SyncFolder get current => stack.last;
+  List<String> get currentPathSegments {
+    return current.path.split('/').where((part) => part.isNotEmpty).toList();
+  }
+
   bool get isCloud => !{
     'webdav',
     'ftp',
@@ -33,8 +37,15 @@ class _SyncFolderPickerState extends State<SyncFolderPicker> {
     'smb',
   }.contains(widget.session.config['provider']);
   bool get showShortcuts => isCloud && stack.length == 1;
-  bool get canSelect =>
-      !loading && error == null && (stack.length > 1 || !isCloud);
+  bool get canSelect {
+    if (loading || error != null) return false;
+    return switch (widget.session.config['provider']) {
+      'webdav' => true,
+      'ftp' || 'ftps' => currentPathSegments.isNotEmpty,
+      'smb' => currentPathSegments.length > 1,
+      _ => stack.length > 1,
+    };
+  }
 
   List<SyncFolder> get shortcutFolders {
     if (!showShortcuts) return const [];

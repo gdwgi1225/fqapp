@@ -102,16 +102,30 @@ void main() {
   });
 
   group('legacy records', () {
-    test('a record without source reads as a fanqie book', () async {
-      await _putRaw('shelf_v1:book:777', {
-        'id': '777',
-        'kind': 'book',
-        'title': '旧番茄记录',
-        'addedAt': 1,
-      });
-      final record = shelf.records().single;
-      expect(record.item.source, 'fanqie');
-    });
+    test(
+      'a zero-time record without source survives a sync snapshot',
+      () async {
+        await _putRaw('shelf_v1:book:777', {
+          'id': '777',
+          'kind': 'book',
+          'title': '旧番茄记录',
+          'addedAt': 0,
+        });
+        final record = shelf.records().single;
+        expect(record.item.source, 'fanqie');
+        expect(record.addedAt.millisecondsSinceEpoch, 0);
+
+        final applied = await shelf.applySyncedRecords(
+          incoming: const [],
+          acceptsCurrent: (current) =>
+              current.length == 1 &&
+              current.single.item.id == record.item.id &&
+              current.single.addedAt == record.addedAt,
+        );
+        expect(applied, isTrue);
+        expect(shelf.records(), isEmpty);
+      },
+    );
 
     test(
       'a source-qualified key heals a record that never wrote source',
@@ -125,6 +139,7 @@ void main() {
         final record = shelf.records().single;
         expect(record.item.source, 'shuqi');
         expect(record.item.title, '旧书旗记录');
+        expect(record.addedAt.millisecondsSinceEpoch, 2);
       },
     );
 
@@ -134,23 +149,26 @@ void main() {
         'kind': 'book',
         'title': '书旗记录',
         'source': 'BAD SOURCE',
-        'addedAt': 3,
+        'addedAt': 'not-a-time',
       });
-      expect(shelf.records().single.item.source, 'shuqi');
+      final record = shelf.records().single;
+      expect(record.item.source, 'shuqi');
+      expect(record.addedAt.millisecondsSinceEpoch, 0);
     });
 
-    test('missing optional fields fall back to defaults', () async {
+    test('missing fields fall back to defaults', () async {
       await _putRaw('shelf_v1:book:1000', {
         'id': '1000',
         'kind': 'book',
         'title': '无扩展字段',
-        'addedAt': 4,
       });
-      final item = shelf.records().single.item;
+      final record = shelf.records().single;
+      final item = record.item;
       expect(item.intro, '');
       expect(item.categories, isEmpty);
       expect(item.creationStatus, -1);
       expect(item.wordNumber, 0);
+      expect(record.addedAt.millisecondsSinceEpoch, 0);
     });
   });
 }

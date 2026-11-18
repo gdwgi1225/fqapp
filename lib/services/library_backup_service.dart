@@ -104,20 +104,6 @@ class LibraryBackupService {
   Future<Set<String>> aiBookIds() =>
       AiBackupService.instance.bookIdsWithAssets();
 
-  Future<AiBackupRestoreResult?> restoreAi(LibraryBackup backup) async {
-    final ai = backup.aiData;
-    if (ai == null || ai.isEmpty) return null;
-    await AiReadingController.instance.init();
-    return AiBackupService.instance.decodeAndRestore(ai);
-  }
-
-  Future<AiBackupRestoreResult> restoreAiPayload(
-    AiBackupPayload payload,
-  ) async {
-    await AiReadingController.instance.init();
-    return AiBackupService.instance.restore(payload);
-  }
-
   Future<bool> export(LibraryBackup backup) async {
     final bytes = await Isolate.run(backup.encode);
     final stamp = backup.createdAt
