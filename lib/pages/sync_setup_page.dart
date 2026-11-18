@@ -474,17 +474,19 @@ class _SyncSetupPageState extends State<SyncSetupPage> {
                     ],
                   ),
                   const SizedBox(height: 20),
-                  const Text('将同步书架、阅读与播放进度、已看剧集；不上传正文、视频和登录凭据。'),
+                  const Text('多端同步仅包含番茄收藏、阅读播放记录和已看剧集；不上传正文、视频和登录凭据。'),
                   const SizedBox(height: 20),
                   if (preview case final summary?) ...[
                     Text(
-                      '本机：书架 ${summary.localShelf} 项、历史 ${summary.localHistory} 条、已看 ${summary.localEpisodes} 集\n'
-                      '云端：书架 ${summary.cloudShelf} 项、历史 ${summary.cloudHistory} 条、已看 ${summary.cloudEpisodes} 集\n'
-                      '预计合并：书架 ${summary.mergedShelf} 项、历史 ${summary.mergedHistory} 条、已看 ${summary.mergedEpisodes} 集\n'
+                      '本机：番茄收藏 ${summary.localShelf} 项、阅读播放 ${summary.localHistory} 条、已看剧集 ${summary.localEpisodes} 集\n'
+                      '云端：番茄收藏 ${summary.cloudShelf} 项、阅读播放 ${summary.cloudHistory} 条、已看剧集 ${summary.cloudEpisodes} 集\n'
+                      '预计合并：番茄收藏 ${summary.mergedShelf} 项、阅读播放 ${summary.mergedHistory} 条、已看剧集 ${summary.mergedEpisodes} 集\n'
                       '预计从本机移除 ${summary.localRemovals} 条记录',
                     ),
                     if (provider == 'webdav')
-                      const Text('合并数量仅统计双向同步记录，云端原有的书旗、分组和 AI 数据会保留。'),
+                      const Text(
+                        '合并数量仅统计番茄收藏、阅读播放记录和已看剧集；WebDAV 原有的书旗、分组和 AI 数据会保留，不参与多端同步。',
+                      ),
                     const SizedBox(height: 12),
                   ],
                   if (webDavSettings != null)

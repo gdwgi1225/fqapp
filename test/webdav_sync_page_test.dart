@@ -1,10 +1,9 @@
-import 'dart:convert';
-
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:fqapp/pages/library_backup_page.dart';
+import 'package:fqapp/pages/multi_device_sync_page.dart';
 import 'package:fqapp/pages/webdav_sync_page.dart';
 
 import 'support/secure_key_storage_mock.dart';
@@ -17,7 +16,7 @@ void main() {
     SharedPreferences.setMockInitialValues({});
   });
 
-  testWidgets('backup page opens WebDAV settings and validates the address', (
+  testWidgets('backup page opens safe WebDAV migration guidance', (
     tester,
   ) async {
     await tester.pumpWidget(const MaterialApp(home: LibraryBackupPage()));
@@ -30,56 +29,20 @@ void main() {
     await tester.tap(entry);
     await tester.pumpAndSettle();
     expect(find.byType(WebDavSyncPage), findsOneWidget);
-    await tester.enterText(
-      find.byType(TextFormField).at(0),
-      'http://example.com/',
-    );
-    final save = find.text('保存设置');
-    await tester.ensureVisible(save);
-    await tester.tap(save);
-    await tester.pumpAndSettle();
-    expect(find.textContaining('请输入 HTTPS'), findsOneWidget);
+    expect(find.text('旧版 WebDAV 直接同步已停用'), findsOneWidget);
+    expect(find.byType(TextFormField), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
   testWidgets(
-    'saves credentials in secure storage without starting disabled sync',
+    'legacy WebDAV entry routes to preview-confirmed multi-device setup',
     (tester) async {
       await tester.pumpWidget(const MaterialApp(home: WebDavSyncPage()));
-      await tester.enterText(
-        find.byType(TextFormField).at(0),
-        'https://dav.example.com/private/',
-      );
-      await tester.enterText(find.byType(TextFormField).at(1), 'reader');
-      await tester.enterText(find.byType(TextFormField).at(2), 'dummy-secret');
-      final password = tester.widget<TextField>(
-        find.descendant(
-          of: find.byType(TextFormField).at(2),
-          matching: find.byType(TextField),
-        ),
-      );
-      expect(password.obscureText, isTrue);
-      await tester.ensureVisible(find.byType(SwitchListTile));
-      await tester.tap(find.byType(SwitchListTile));
+      expect(secureKeys, isEmpty);
+      await tester.tap(find.byKey(const ValueKey('open-multi-device-sync')));
       await tester.pumpAndSettle();
-      final save = find.text('保存设置');
-      await tester.ensureVisible(save);
-      await tester.tap(save);
-      // The save chain now crosses two secure-storage backends (native + legacy
-      // mirror), so it needs event-loop turns that pumpAndSettle alone does not
-      // drive. Wait for the message instead of assuming one settle is enough.
-      for (var attempt = 0; attempt < 40; attempt++) {
-        await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 50)),
-        );
-        await tester.pump();
-        if (find.text('设置已安全保存').evaluate().isNotEmpty) break;
-      }
-      expect(find.text('设置已安全保存'), findsOneWidget);
-      final secure = secureKeys;
-      final settings = jsonDecode(secure['fqapp.webdav.config.v1']!) as Map;
-      expect(settings['password'], 'dummy-secret');
-      expect(settings['enabled'], isFalse);
+      expect(find.byType(MultiDeviceSyncPage), findsOneWidget);
+      expect(secureKeys, isEmpty);
       expect((await SharedPreferences.getInstance()).getKeys(), isEmpty);
       expect(tester.takeException(), isNull);
     },

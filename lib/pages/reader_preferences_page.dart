@@ -520,10 +520,7 @@ class _ReaderPreferencesPageState extends State<ReaderPreferencesPage>
                 divisions: 18,
                 format: (value) => '${value.round()}',
                 onChanged: (value) => _apply(
-                  (preferences) => preferences.copyWith(
-                    fontSize: value,
-                    titleSize: value + 2,
-                  ),
+                  (preferences) => preferences.copyWith(fontSize: value),
                 ),
               ),
               _choiceRow(

@@ -170,7 +170,7 @@ class SettingsPage extends StatelessWidget {
           SettingsItem(
             icon: Icons.sync,
             title: '多端同步',
-            subtitle: '合并书架、阅读和观看记录',
+            subtitle: '仅同步番茄收藏、阅读播放记录和已看剧集',
             onTap: (context, _) => Navigator.push(
               context,
               MaterialPageRoute(builder: (_) => const MultiDeviceSyncPage()),

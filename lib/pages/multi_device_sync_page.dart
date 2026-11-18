@@ -25,15 +25,52 @@ class MultiDeviceSyncPage extends StatefulWidget {
 class _MultiDeviceSyncPageState extends State<MultiDeviceSyncPage> {
   late final store = widget.store ?? MultiDeviceSyncService.instance;
   late bool expanded = store.enabled;
-  late String provider = store.config['provider'] ?? 'webdav';
+  late String provider = needsReview
+      ? 'webdav'
+      : store.config['provider'] ?? 'webdav';
   bool updating = false;
+  bool initializing = false;
+  String? initializationError;
   bool get needsReview => switch (store) {
     final WebDavSyncSettings settings => settings.needsWebDavReview,
     _ => false,
   };
+  bool get showWebDavReview => provider == 'webdav' && needsReview;
+  String get currentEndpoint => store.configFor(provider)['endpoint'] ?? '';
   bool get configured =>
-      store.config['provider'] == provider &&
-      (store.config['endpoint'] ?? '').isNotEmpty;
+      store.config['provider'] == provider && currentEndpoint.isNotEmpty;
+
+  @override
+  void initState() {
+    super.initState();
+    if (store is MultiDeviceSyncService) initialize();
+  }
+
+  Future<void> initialize() async {
+    setState(() {
+      initializing = true;
+      initializationError = null;
+    });
+    final service = store as MultiDeviceSyncService;
+    String? failure;
+    try {
+      await service.initialize();
+    } catch (error) {
+      failure = error is StateError ? '本机数据尚未准备好，请稍后重试' : service.status;
+    }
+    if (!mounted) return;
+    setState(() {
+      initializing = false;
+      if (service.ready) {
+        expanded = store.enabled;
+        provider = needsReview
+            ? 'webdav'
+            : store.config['provider'] ?? 'webdav';
+      } else {
+        initializationError = failure ?? service.status;
+      }
+    });
+  }
 
   void notice(String message) => ScaffoldMessenger.of(
     context,
@@ -107,7 +144,7 @@ class _MultiDeviceSyncPageState extends State<MultiDeviceSyncPage> {
     );
     if (saved == true && mounted) {
       setState(() {
-        provider = store.config['provider']!;
+        provider = needsReview ? 'webdav' : store.config['provider']!;
         expanded = store.enabled;
       });
     }
@@ -119,75 +156,94 @@ class _MultiDeviceSyncPageState extends State<MultiDeviceSyncPage> {
     title: '多端同步',
     body: ListenableBuilder(
       listenable: store,
-      builder: (context, _) => ListView(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        children: [
-          SettingsGroupCard(
-            children: [
-              SettingsRow(
-                title: '启用自动同步',
-                icon: LucideIcons.refresh_cw,
-                iconTile: true,
-                subtitle: '自动同步书架、阅读和播放进度',
-                trailing: SettingsSwitch(
-                  value: expanded || store.enabled,
-                  semanticLabel: '启用自动同步',
-                  onChanged: updating ? null : toggle,
+      builder: (context, _) {
+        if (initializing) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        if (initializationError case final message?) {
+          return Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Text(message, textAlign: TextAlign.center),
                 ),
-              ),
-            ],
-          ),
-          if (needsReview) ...[
-            const SizedBox(height: 16),
-            const Text('请确认 HTTPS 地址和目录，然后切换到多端同步。'),
-          ],
-          if (expanded || store.enabled || needsReview) ...[
-            const SizedBox(height: 16),
+                TextButton(onPressed: initialize, child: const Text('重试')),
+              ],
+            ),
+          );
+        }
+        return ListView(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          children: [
             SettingsGroupCard(
               children: [
                 SettingsRow(
-                  title: '存储服务',
-                  icon: LucideIcons.cloud,
+                  title: '启用自动同步',
+                  icon: LucideIcons.refresh_cw,
                   iconTile: true,
-                  value: SyncProvider.byId(provider).available
-                      ? SyncProvider.byId(provider).title
-                      : '请选择',
-                  onTap: chooseProvider,
-                ),
-                SettingsRow(
-                  title: needsReview
-                      ? '确认同步设置'
-                      : configured
-                      ? '修改同步设置'
-                      : '开始配置',
-                  icon: LucideIcons.folder,
-                  iconTile: true,
-                  subtitle: configured
-                      ? store.config['endpoint']
-                      : '登录、选择目录并保存',
-                  onTap: SyncProvider.byId(provider).available
-                      ? setup
-                      : chooseProvider,
+                  subtitle: '自动同步范围仅含番茄收藏、阅读播放记录和已看剧集',
+                  trailing: SettingsSwitch(
+                    value: expanded || store.enabled,
+                    semanticLabel: '启用自动同步',
+                    onChanged: updating ? null : toggle,
+                  ),
                 ),
               ],
             ),
-            if (configured && store.enabled) ...[
+            if (showWebDavReview) ...[
+              const SizedBox(height: 16),
+              const Text('请确认 HTTPS 地址和目录，然后切换到多端同步。'),
+            ],
+            if (expanded || store.enabled || showWebDavReview) ...[
               const SizedBox(height: 16),
               SettingsGroupCard(
                 children: [
                   SettingsRow(
-                    title: store.busy ? '正在同步…' : '立即同步',
-                    icon: LucideIcons.refresh_cw,
+                    title: '存储服务',
+                    icon: LucideIcons.cloud,
                     iconTile: true,
-                    subtitle: store.status,
-                    onTap: store.busy ? null : store.sync,
+                    value: SyncProvider.byId(provider).available
+                        ? SyncProvider.byId(provider).title
+                        : '请选择',
+                    onTap: chooseProvider,
+                  ),
+                  SettingsRow(
+                    title: showWebDavReview
+                        ? '确认同步设置'
+                        : currentEndpoint.isNotEmpty
+                        ? '修改同步设置'
+                        : '开始配置',
+                    icon: LucideIcons.folder,
+                    iconTile: true,
+                    subtitle: currentEndpoint.isNotEmpty
+                        ? currentEndpoint
+                        : '登录、选择目录并保存',
+                    onTap: SyncProvider.byId(provider).available
+                        ? setup
+                        : chooseProvider,
                   ),
                 ],
               ),
+              if (configured && store.enabled) ...[
+                const SizedBox(height: 16),
+                SettingsGroupCard(
+                  children: [
+                    SettingsRow(
+                      title: store.busy ? '正在同步…' : '立即同步',
+                      icon: LucideIcons.refresh_cw,
+                      iconTile: true,
+                      subtitle: store.status,
+                      onTap: store.busy ? null : store.sync,
+                    ),
+                  ],
+                ),
+              ],
             ],
           ],
-        ],
-      ),
+        );
+      },
     ),
   );
 }

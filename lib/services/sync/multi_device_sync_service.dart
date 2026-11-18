@@ -13,7 +13,7 @@ import '../library_backup_service.dart';
 import '../library_store.dart';
 import '../shelf_store.dart';
 import '../webdav_client.dart';
-import '../webdav_sync_service.dart';
+import '../legacy_webdav_config_store.dart';
 import 'sync_document.dart';
 import 'sync_snapshot.dart';
 import 'sync_transport.dart';
@@ -25,6 +25,17 @@ String newSyncIdentity() => List.generate(
   16,
   (_) => Random.secure().nextInt(256),
 ).map((v) => v.toRadixString(16).padLeft(2, '0')).join();
+
+typedef _PreparedProfile = ({
+  String actor,
+  SyncDocument document,
+  SyncSnapshot baseline,
+  int sequence,
+  String published,
+  DateTime? lastSuccess,
+  bool upstreamEstablished,
+  Map<String, dynamic>? pending,
+});
 
 class SyncProvider {
   const SyncProvider(this.id, this.title, this.help);
@@ -63,11 +74,12 @@ class MultiDeviceSyncService extends ChangeNotifier
 
   static const _secrets = FlutterSecureStorage();
   Box<dynamic>? _box;
+  bool _ready = false;
+  Future<void>? _initializing;
   Map<String, String> _config = {};
   final Map<String, Map<String, String>> _providerConfigs = {};
   WebDavConfig? _legacyWebDav;
-  WebDavConfig? get _originalWebDav =>
-      WebDavSyncService.instance.config ?? _legacyWebDav;
+  WebDavConfig? get _originalWebDav => _legacyWebDav;
   bool get hasSelectedSyncBackend => _config['unifiedSyncConfirmed'] == 'true';
   @override
   bool get needsWebDavReview =>
@@ -114,7 +126,7 @@ class MultiDeviceSyncService extends ChangeNotifier
   DateTime? lastSuccess;
   @override
   bool get enabled => _config['enabled'] == 'true' && !needsWebDavReview;
-  bool get ready => _box != null;
+  bool get ready => _ready;
   @override
   bool busy = false;
   bool _configuring = false;
@@ -135,10 +147,29 @@ class MultiDeviceSyncService extends ChangeNotifier
     return result;
   }
 
-  Future<void> initialize() async {
-    if (_box != null || !ShelfStore.instance.isReady) return;
+  Future<void> initialize() {
+    if (_ready) return Future.value();
+    final active = _initializing;
+    if (active != null) return active;
+    late final Future<void> task;
+    task = _initialize().whenComplete(() {
+      if (identical(_initializing, task)) _initializing = null;
+    });
+    _initializing = task;
+    return task;
+  }
+
+  Future<void> _initialize() async {
+    if (!ShelfStore.instance.isReady) {
+      throw StateError('本机书架尚未准备好');
+    }
+    _ready = false;
+    _config = {};
+    _providerConfigs.clear();
+    _legacyWebDav = null;
+    _pendingRecovery = null;
     try {
-      _box = await EncryptedHive.openBox(
+      _box ??= await EncryptedHive.openBox(
         Hive,
         'multi_device_sync_v1',
         requireEncryption: true,
@@ -170,11 +201,15 @@ class MultiDeviceSyncService extends ChangeNotifier
         _providerConfigs[provider] = Map.of(_config);
       }
       try {
-        _legacyWebDav = await WebDavSyncService.readSavedConfig();
+        _legacyWebDav = await LegacyWebDavConfigStore.readSavedConfig();
       } catch (_) {
         // An unavailable legacy setting does not block an existing profile.
       }
-      _loadProfile();
+      _profile = _config['profile'] ?? '';
+      _applyPreparedProfile(
+        _readProfileState(_profile) ?? _newPreparedProfile(),
+      );
+      _ready = true;
       if (needsWebDavReview) {
         status = '请确认 HTTPS WebDAV 配置和目录后切换到多端同步';
       }
@@ -189,64 +224,154 @@ class MultiDeviceSyncService extends ChangeNotifier
         unawaited(sync());
       }
     } catch (error) {
+      _ready = false;
       status = '同步初始化失败，本机阅读不受影响';
       notifyListeners();
+      rethrow;
     }
   }
 
-  void _loadProfile() {
-    _profile = _config['profile'] ?? '';
-    final raw = _box?.get(_profile);
-    _document = SyncDocument();
-    _baseline = SyncSnapshot({});
-    _actor = newSyncIdentity();
-    _sequence = 0;
-    _published = '';
-    _journalDirty = false;
-    _upstreamEstablished = false;
-    lastSuccess = null;
-    if (raw is String) {
-      final saved = jsonDecode(raw) as Map;
-      _actor = saved['actor'] as String;
-      if (!syncActorPattern.hasMatch(_actor)) {
-        throw const FormatException('设备身份无效');
-      }
-      _document = SyncDocument.fromJson(
-        Map<String, dynamic>.from(saved['document'] as Map),
-      );
-      _baseline = SyncSnapshot({
-        for (final e in (saved['baseline'] as Map).entries)
-          e.key as String: Map<String, dynamic>.from(e.value as Map),
-      });
-      _sequence = saved['sequence'] as int;
-      _published = saved['published'] as String;
-      final timestamp = saved['lastSuccess'] as int?;
-      _upstreamEstablished = _hasUpstreamJournal(saved);
-      if (timestamp != null) {
-        lastSuccess = DateTime.fromMillisecondsSinceEpoch(timestamp);
-      }
-      // Recover a crash between a library write and the matching journal write.
-      final pending = saved['pending'];
-      if (pending is Map) _pendingRecovery = Map<String, dynamic>.from(pending);
+  _PreparedProfile _newPreparedProfile() => (
+    actor: newSyncIdentity(),
+    document: SyncDocument(),
+    baseline: SyncSnapshot({}),
+    sequence: 0,
+    published: '',
+    lastSuccess: null,
+    upstreamEstablished: false,
+    pending: null,
+  );
+
+  SyncSnapshot _readValidatedSnapshot(Object? raw, String errorMessage) {
+    if (raw is! Map) {
+      throw FormatException(errorMessage);
     }
+    final values = <String, Map<String, dynamic>>{};
+    for (final entry in raw.entries) {
+      if (entry.key is! String || entry.value is! Map) {
+        throw FormatException(errorMessage);
+      }
+      values[entry.key as String] = Map<String, dynamic>.from(
+        entry.value as Map,
+      );
+    }
+    final snapshot = SyncSnapshot(values);
+    for (final entry in snapshot.values.entries) {
+      SyncSnapshot.validateKey(entry.key, entry.value);
+    }
+    final normalized = SyncSnapshot.fromBackup(snapshot.toBackup());
+    if (syncJson(normalized.values) != syncJson(snapshot.values)) {
+      throw FormatException(errorMessage);
+    }
+    return normalized;
+  }
+
+  _PreparedProfile? _readProfileState(String profile) {
+    final raw = _box?.get(profile);
+    if (raw == null) return null;
+    if (raw is! String) {
+      throw const FormatException('同步记录状态损坏');
+    }
+    final decoded = jsonDecode(raw);
+    if (decoded is! Map) {
+      throw const FormatException('同步记录状态损坏');
+    }
+    final saved = Map<String, dynamic>.from(decoded);
+    final actor = saved['actor'];
+    if (actor is! String || !syncActorPattern.hasMatch(actor)) {
+      throw const FormatException('设备身份无效');
+    }
+    final document = saved['document'];
+    if (document is! Map) {
+      throw const FormatException('同步记录状态损坏');
+    }
+    final normalizedBaseline = _readValidatedSnapshot(
+      saved['baseline'],
+      '同步记录状态损坏',
+    );
+    final sequence = saved['sequence'];
+    final published = saved['published'];
+    if (sequence is! int ||
+        sequence < 0 ||
+        sequence > 9007199254740991 ||
+        published is! String) {
+      throw const FormatException('同步记录状态损坏');
+    }
+    final timestamp = saved['lastSuccess'];
+    if (timestamp != null &&
+        (timestamp is! int ||
+            timestamp < -8640000000000000 ||
+            timestamp > 8640000000000000)) {
+      throw const FormatException('同步记录时间无效');
+    }
+    final savedPending = saved['pending'];
+    final normalizedPending = savedPending == null
+        ? null
+        : _readValidatedSnapshot(savedPending, '同步记录待提交状态损坏');
+    final parsedDocument = SyncDocument.fromJson(
+      Map<String, dynamic>.from(document),
+    );
+    final documentSnapshot = SyncSnapshot.fromDocument(parsedDocument);
+    if (syncJson(documentSnapshot.values) != syncJson(parsedDocument.visible)) {
+      throw const FormatException('同步记录来源或内容无效');
+    }
+    return (
+      actor: actor,
+      document: parsedDocument,
+      baseline: normalizedBaseline,
+      sequence: sequence,
+      published: published,
+      lastSuccess: timestamp == null
+          ? null
+          : DateTime.fromMillisecondsSinceEpoch(timestamp),
+      upstreamEstablished: saved['upstreamEstablished'] == true,
+      pending: normalizedPending == null
+          ? null
+          : Map<String, dynamic>.from(normalizedPending.values),
+    );
+  }
+
+  void _applyPreparedProfile(_PreparedProfile prepared) {
+    _document = prepared.document;
+    _baseline = prepared.baseline;
+    _actor = prepared.actor;
+    _sequence = prepared.sequence;
+    _published = prepared.published;
+    lastSuccess = prepared.lastSuccess;
+    _journalDirty = false;
+    _upstreamEstablished = prepared.upstreamEstablished;
+    _pendingRecovery = prepared.pending;
     status = enabled ? '等待同步' : '未启用多端同步';
   }
+
+  String _encodePreparedProfile(
+    _PreparedProfile prepared, {
+    required bool includeUpstream,
+  }) => jsonEncode({
+    'actor': prepared.actor,
+    'sequence': prepared.sequence,
+    'published': prepared.published,
+    'document': prepared.document.toJson(),
+    'baseline': prepared.baseline.values,
+    'lastSuccess': prepared.lastSuccess?.millisecondsSinceEpoch,
+    if (includeUpstream) 'upstreamEstablished': prepared.upstreamEstablished,
+    'pending': ?prepared.pending,
+  });
 
   Map<String, dynamic>? _pendingRecovery;
   Future<void> _persist({Map<String, dynamic>? pending}) async {
     await _box!.put(
       _profile,
-      jsonEncode({
-        'actor': _actor,
-        'sequence': _sequence,
-        'published': _published,
-        'document': _document.toJson(),
-        'baseline': _baseline.values,
-        'lastSuccess': lastSuccess?.millisecondsSinceEpoch,
-        if (_config['provider'] == 'webdav')
-          'upstreamEstablished': _upstreamEstablished,
-        'pending': ?pending,
-      }),
+      _encodePreparedProfile((
+        actor: _actor,
+        document: _document,
+        baseline: _baseline,
+        sequence: _sequence,
+        published: _published,
+        lastSuccess: lastSuccess,
+        upstreamEstablished: _upstreamEstablished,
+        pending: pending,
+      ), includeUpstream: _config['provider'] == 'webdav'),
     );
     await _box!.flush();
     _journalDirty = false;
@@ -256,19 +381,11 @@ class MultiDeviceSyncService extends ChangeNotifier
   Future<void> configure(Map<String, String> config) async {
     if (_configuring) throw const SyncFailure('请等待当前同步设置保存完成');
     _configuring = true;
-    final switching =
-        ready && config['enabled'] == 'true' && !hasSelectedSyncBackend;
     try {
-      if (switching) {
-        await WebDavSyncService.instance.suspendForMultiDeviceSync();
-      }
       await _configure(config);
     } finally {
       _configuring = false;
       _updateWebDavPolling(WidgetsBinding.instance.lifecycleState);
-      if (switching && !hasSelectedSyncBackend) {
-        await WebDavSyncService.instance.resumeAfterSetup();
-      }
     }
     if (enabled) unawaited(sync());
   }
@@ -323,24 +440,64 @@ class MultiDeviceSyncService extends ChangeNotifier
             ? newSyncIdentity()
             : prior['profile']!,
       };
-      _timer?.cancel();
+      final prepared = await _prepareProfile(next['profile']!);
+      final providerConfigs = {..._providerConfigs, key: next};
+      final providerConfig = Map<String, String>.of(next);
       // Store the inactive profile first. An interrupted settings save must
       // never point the old in-memory journal at the new destination.
       await _secrets.write(
         key: 'fqapp.multi-device-sync.providers.v1',
-        value: jsonEncode({..._providerConfigs, key: next}),
+        value: jsonEncode(providerConfigs),
       );
       await _secrets.write(
         key: 'fqapp.multi-device-sync.config.v1',
         value: jsonEncode(next),
       );
+      _timer?.cancel();
       _config = next;
-      _providerConfigs[key] = Map.of(next);
-      _pendingRecovery = null;
-      _loadProfile();
-      if (enabled) await _capture();
+      _profile = next['profile']!;
+      _providerConfigs[key] = providerConfig;
+      _applyPreparedProfile(prepared);
       notifyListeners();
     });
+  }
+
+  Future<_PreparedProfile> _prepareProfile(String profile) async {
+    final box = _box!;
+    final existing = _readProfileState(profile);
+    if (existing != null) {
+      return existing;
+    }
+
+    final current = await _current();
+    final actor = newSyncIdentity();
+    final document = SyncDocument();
+    for (final entry in current.values.entries) {
+      final value = entry.value;
+      final wall = value['time'] ?? value['addedAt'] ?? value['at'];
+      document.change(
+        entry.key,
+        value,
+        actor: actor,
+        wall: wall is num && wall.isFinite ? wall.toInt() : 0,
+      );
+    }
+    final prepared = (
+      actor: actor,
+      document: document,
+      baseline: current,
+      sequence: 0,
+      published: '',
+      lastSuccess: null,
+      upstreamEstablished: false,
+      pending: null,
+    );
+    await box.put(
+      profile,
+      _encodePreparedProfile(prepared, includeUpstream: true),
+    );
+    await box.flush();
+    return _readProfileState(profile)!;
   }
 
   @override
@@ -449,8 +606,9 @@ class MultiDeviceSyncService extends ChangeNotifier
     );
   }
 
-  Future<SyncSnapshot> _current() async =>
-      SyncSnapshot.fromBackup(await LibraryBackupService().capture());
+  Future<SyncSnapshot> _current() async => SyncSnapshot.fromBackup(
+    await LibraryBackupService().capture(includeAi: false),
+  );
 
   static WebDavConfig _upstreamConfig(Map<String, String> config) =>
       WebDavConfig(
@@ -459,9 +617,6 @@ class MultiDeviceSyncService extends ChangeNotifier
         password: config['password'] ?? '',
         enabled: true,
       );
-
-  static bool _hasUpstreamJournal(Map? saved) =>
-      saved?['upstreamEstablished'] == true;
 
   @override
   Future<WebDavSyncPreview> previewWebDav(Map<String, String> config) async {
@@ -477,14 +632,9 @@ class MultiDeviceSyncService extends ChangeNotifier
       'username',
       'password',
     ].every((key) => prior[key] == config[key]);
-    final raw = sameTarget ? _box!.get(prior['profile']) : null;
-    final saved = raw is String
-        ? jsonDecode(raw) as Map<String, dynamic>
-        : null;
-    final baseline = saved?['baseline'] as Map? ?? const {};
-    final document = saved == null
-        ? SyncDocument()
-        : SyncDocument.fromJson(saved['document'] as Map<String, dynamic>);
+    final saved = sameTarget ? _readProfileState(prior['profile'] ?? '') : null;
+    final baseline = saved?.baseline.values ?? const {};
+    final document = saved?.document ?? SyncDocument();
     for (final key in {
       ...baseline.keys.cast<String>(),
       ...current.values.keys,
@@ -494,7 +644,7 @@ class MultiDeviceSyncService extends ChangeNotifier
       document.change(
         key,
         value,
-        actor: saved?['actor'] as String? ?? 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+        actor: saved?.actor ?? 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
         wall:
             (value?['time'] ?? value?['addedAt'] ?? value?['at']) as int? ?? 0,
       );
@@ -507,7 +657,7 @@ class MultiDeviceSyncService extends ChangeNotifier
       try {
         preview = await upstream.preview(
           document,
-          requireJournal: _hasUpstreamJournal(saved),
+          requireJournal: saved?.upstreamEstablished == true,
         );
       } finally {
         upstream.close();
@@ -516,7 +666,10 @@ class MultiDeviceSyncService extends ChangeNotifier
       throw SyncFailure(error.message);
     }
 
-    final remoteBackup = preview.remote;
+    final remote = preview.remote;
+    final remoteBackup = remote == null
+        ? null
+        : SyncSnapshot.fromBackup(remote).toBackup();
     final desired = SyncSnapshot.fromDocument(preview.document);
     final backup = desired.toBackup();
     final localBackup = current.toBackup();

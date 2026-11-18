@@ -307,32 +307,37 @@ class _LibraryBackupPageState extends State<LibraryBackupPage> {
         child: const SettingsSection(title: '云端同步', code: 'SYNC'),
       ),
       const SizedBox(height: 14),
-      if (!MultiDeviceSyncService.instance.hasSelectedSyncBackend)
-        SettingsEntryCard(
-          key: const ValueKey('backup-webdav'),
-          icon: LucideIcons.cloud,
-          title: 'WebDAV 同步',
-          subtitle: '自动同步书架和阅读进度',
-          enabled: enabled,
-          onTap: () => Navigator.push(
-            context,
-            MaterialPageRoute<void>(builder: (_) => const WebDavSyncPage()),
-          ),
-        )
-      else
-        SettingsEntryCard(
-          key: const ValueKey('backup-multi-device'),
-          icon: LucideIcons.cloud,
-          title: '多端同步',
-          subtitle: '打开多端同步设置',
-          enabled: enabled,
-          onTap: () => Navigator.push(
-            context,
-            MaterialPageRoute<void>(
-              builder: (_) => const MultiDeviceSyncPage(),
-            ),
-          ),
-        ),
+      ListenableBuilder(
+        listenable: MultiDeviceSyncService.instance,
+        builder: (context, _) =>
+            !MultiDeviceSyncService.instance.hasSelectedSyncBackend
+            ? SettingsEntryCard(
+                key: const ValueKey('backup-webdav'),
+                icon: LucideIcons.cloud,
+                title: 'WebDAV 同步',
+                subtitle: '旧版安全升级，先预览再启用多端同步',
+                enabled: enabled,
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                    builder: (_) => const WebDavSyncPage(),
+                  ),
+                ),
+              )
+            : SettingsEntryCard(
+                key: const ValueKey('backup-multi-device'),
+                icon: LucideIcons.cloud,
+                title: '多端同步',
+                subtitle: '打开多端同步设置',
+                enabled: enabled,
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                    builder: (_) => const MultiDeviceSyncPage(),
+                  ),
+                ),
+              ),
+      ),
       const SizedBox(height: 24),
       KeyedSubtree(
         key: _anchor.keyFor('sources'),

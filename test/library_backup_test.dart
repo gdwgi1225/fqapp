@@ -153,7 +153,7 @@ void main() {
         shelf: [
           ShelfRecord(
             item: _item('123', title: '番茄书'),
-            addedAt: DateTime(2020),
+            addedAt: DateTime.fromMillisecondsSinceEpoch(0),
           ),
           ShelfRecord(
             item: _item(
@@ -215,6 +215,7 @@ void main() {
       );
       final shuqi = restored.shelf.singleWhere((e) => e.item.source == 'shuqi');
       expect(fanqie.item.title, '番茄书');
+      expect(fanqie.addedAt.millisecondsSinceEpoch, 0);
       expect(shuqi.item.title, '书旗书');
       expect(shuqi.item.intro, '简介');
       expect(shuqi.item.categories, ['玄幻', '热血']);
@@ -267,6 +268,16 @@ void main() {
                 ).encodeAsText(),
               )
               as Map<String, dynamic>;
+      json['shelf'] = [
+        {'id': 'valid', 'kind': 'book', 'addedAt': -1},
+      ];
+      expect(
+        () => LibraryBackup.decode(
+          Uint8List.fromList(utf8.encode(jsonEncode(json))),
+        ),
+        throwsFormatException,
+      );
+      json['shelf'] = [];
       (json['history'] as List).add({
         'id': 'bad',
         'kind': 'book',
